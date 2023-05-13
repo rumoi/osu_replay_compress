@@ -108,7 +108,7 @@ std::vector<u8> compress_osr_string(std::string_view string) {
 
 	p.dictSize = string.size();
 
-	*(u32*)(output.data() + 5 + 4) = string.size();
+	*(u32*)(output.data() + 5) = string.size();
 
 	SizeT propsSize = 5;
 
@@ -355,6 +355,10 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 					d_buff.clear();
 
 				}
+
+				for (size_t i{1}; i < key_frame_count; ++i)
+					float_table[fc + 2 * i].p.mantissa ^=
+						(float_table[fc + 2 * (i-1)].p.mantissa & 0b11111110000000000000000);
 
 			}
 

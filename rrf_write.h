@@ -522,8 +522,15 @@ struct _mantissa_stream {
 
 	// 16 4 3
 	bit_stream stream[3];
+	u32 last{};
 
 	void push_back(u32 v) {
+
+		const auto saved{ v };
+
+		v ^= (last & 0b11111110000000000000000);
+
+		last = saved;
 
 		for (size_t i{}; i < 16; ++i)
 			stream[0].push_back((v >> i) & 1);
@@ -557,7 +564,6 @@ struct _mantissa_stream {
 		return final_bytes;
 
 	}
-
 
 };
 
@@ -1041,11 +1047,9 @@ void osr_to_rrf(const char* in_file, const char* out_file, bool osr_has_header =
 
 	DIAG::INPUT_SIZE = lzma_size;
 
-	size_t osr_size{}, input_size{ lzma_size - (5 + 8) };
-	ELzmaStatus lzma_status{};
+	size_t osr_size{ *(u32*)(lzma_start + 5) }, input_size{ lzma_size - (5 + 8) };
 
-	for (int i = 0; i < 8; ++i)
-		osr_size |= (lzma_start[LZMA_PROPS_SIZE + i] << (i * 8));
+	ELzmaStatus lzma_status{};
 
 	osr_string.resize(osr_size);
 

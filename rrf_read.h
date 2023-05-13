@@ -332,8 +332,8 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 				bit_stream d_buff{};
 
 				constexpr size_t start[]{ 0, 16, 20, 23 };
-
-				for (size_t mc{}; mc < 3; ++mc) {
+				
+				for (size_t mc{}; mc < (header->is_16bit_mantissa ? 1 : 3); ++mc) {
 
 					const auto size{ *(u32*)d };
 

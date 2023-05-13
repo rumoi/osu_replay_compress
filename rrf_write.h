@@ -543,7 +543,7 @@ struct _mantissa_stream {
 
 	}
 
-	std::vector<u8> get_comp() const {
+	std::vector<u8> get_comp(const bool is_16bit) const {
 
 		std::vector<u8> final_bytes{};
 
@@ -553,7 +553,7 @@ struct _mantissa_stream {
 			comp::man_3_prop()
 		};
 
-		for (size_t i{}; i < 3; ++i) {
+		for (size_t i{}; i < (is_16bit ? 1 : 3); ++i) {
 
 			const auto c{ comp::compress(stream[i], prop[i]) };
 
@@ -729,7 +729,7 @@ struct _time_delta_stream {
 
 struct _rrf_construct {
 
-	u8 rrf_version;
+	u8 rrf_version, is_16bit_mantissa;
 
 	u32 frame_count, lowfi_count;
 
@@ -754,6 +754,7 @@ struct _rrf_construct {
 		_rrf_header header{};
 
 		header.rrf_version = rrf_version;
+		header.is_16bit_mantissa = is_16bit_mantissa;
 
 		header.frame_count = frame_count;
 		header.lowfi_count = lowfi_count;
@@ -820,7 +821,7 @@ struct _rrf_construct {
 
 				auto& d{ header.high_float[i].mantissa };
 
-				const auto& comp{ man[i].get_comp() };
+				const auto& comp{ man[i].get_comp(is_16bit_mantissa) };
 
 				d.is_compressed = 0;
 				d.size = comp.size();
@@ -879,10 +880,11 @@ void encode_delta(const _osr& r, _rrf_construct& rrf) {
 
 }
 
-void encode_replay(const char* output_file, const _osr& r) {
+void encode_replay(const char* output_file, const _osr& r, const bool is_16bit_mantissa) {
 
 	_rrf_construct result{};
 	result.frame_count = r.size();
+	result.is_16bit_mantissa = is_16bit_mantissa;
 
 	encode_delta(r, result);
 
@@ -976,8 +978,7 @@ void encode_replay(const char* output_file, const _osr& r) {
 
 }
 
-
-void osr_to_rrf(const char* in_file, const char* out_file, bool osr_has_header = 1){
+void osr_to_rrf(const char* in_file, const char* out_file, bool osr_has_header = 1, const bool is_16bit_mantissa = 1){
 
 	const auto& raw_file{read_file(in_file)};
 
@@ -1114,7 +1115,7 @@ void osr_to_rrf(const char* in_file, const char* out_file, bool osr_has_header =
 		replay_stream.pop_back();
 	}
 
-	encode_replay(out_file, replay_stream);
+	encode_replay(out_file, replay_stream, is_16bit_mantissa);
 
 }
 

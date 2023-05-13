@@ -329,7 +329,7 @@ struct _data_chunk {
 
 struct _rrf_header {
 
-	u32 rrf_version : 4, padding_0 : 28;
+	u32 rrf_version : 4, is_16bit_mantissa:1, padding_0 : 27;
 	u32 frame_count, lowfi_count, lowf_delta_y_start_bit;
 
 	_data_chunk time_table;

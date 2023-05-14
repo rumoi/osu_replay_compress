@@ -167,18 +167,36 @@ namespace comp {
 		return p;
 	}
 
-	CLzmaEncProps man_16_prop() {
+	CLzmaEncProps man_8_prop() {
 
 		CLzmaEncProps p;
 		LzmaEncProps_Init(&p);
 
 		p.fb = 32;
-		p.level = 5;
+		p.level = 6;
 		p.mc = 16;
-		p.numHashBytes = 2;
+		p.numHashBytes = 4;
 
 		p.lc = 4;
 
+		p.pb = 0;
+
+		return p;
+
+
+	}
+
+	CLzmaEncProps man_16_prop() {
+		CLzmaEncProps p;
+		LzmaEncProps_Init(&p);
+		
+		p.fb = 32;
+		p.level = 5;
+		p.mc = 16;
+		p.numHashBytes = 2;
+		
+		p.lc = 4;
+		
 		p.pb = 1;//2 byte alignment
 
 		return p;
@@ -520,45 +538,50 @@ bit_stream combine_bool_vector(const bit_stream& a, const bit_stream& b) {
 
 struct _mantissa_stream {
 
-	// 16 4 3
-	bit_stream stream[3];
-	u32 last{};
+	bit_stream stream[2];
 
-	void push_back(u32 v) {
+	u8 last{};
 
-		const auto saved{ v };
+	void push_back(const u32 V) {
 
-		v ^= (last & 0b11111110000000000000000);
+		for (size_t i{ 0 }; i < 16; ++i)
+			stream[0].push_back((V >> i) & 1);
 
-		last = saved;
+		u8 S{ u8(V >> 16) };
 
-		for (size_t i{}; i < 16; ++i)
-			stream[0].push_back((v >> i) & 1);
+		S -= last;
 
-		for (size_t i{ 16 }; i < 20; ++i)
-			stream[1].push_back((v >> i) & 1);
+		last = u8(V >> 16);
 
-		for (size_t i{ 20 }; i < 23; ++i)
-			stream[2].push_back((v >> i) & 1);
+		for (size_t i{ 0 }; i < 8; ++i)
+			stream[1].push_back((S >> i) & 1);
 
 	}
 
-	std::vector<u8> get_comp(const bool is_16bit) const {
+	std::vector<u8> get_comp() const {
 
 		std::vector<u8> final_bytes{};
 
-		const CLzmaEncProps prop[3]{
+		const CLzmaEncProps prop[2]{
 			comp::man_16_prop(),
-			comp::man_4_prop(),
-			comp::man_3_prop()
+			comp::man_8_prop()
 		};
 
-		for (size_t i{}; i < (is_16bit ? 1 : 3); ++i) {
+		for (size_t i{}; i < 2; ++i) {
 
-			const auto c{ comp::compress(stream[i], prop[i]) };
+			if (stream[i].size() == 0) {
+				add_to_u8(final_bytes, 0);
+				continue;
+			}
 
-			add_to_u8(final_bytes, c.size());
+			bool not_compressed{};
+
+			const auto c{ comp::compress_conditional(stream[i], prop[i], not_compressed) };
+			
+			add_to_u8(final_bytes, c.size() | (u32(!not_compressed) << 31));
+
 			add_to_u8(final_bytes, c);
+
 		}
 
 		return final_bytes;
@@ -634,7 +657,7 @@ struct _key_data_constructor {
 		smoke.push_back(0);
 	}
 
-	void tick(u32 keys) {
+	bool tick(u32 keys) {
 
 		if (keys & 4) keys &= ~u32(1);
 		if (keys & 8) keys &= ~u32(2);
@@ -664,8 +687,7 @@ struct _key_data_constructor {
 		else
 			++smoke.back();
 
-
-
+		return ((keys & 15) & delta) > 0;
 	}
 
 };
@@ -729,7 +751,8 @@ struct _time_delta_stream {
 
 struct _rrf_construct {
 
-	u8 rrf_version, is_16bit_mantissa;
+	u8 rrf_version;
+	u32 flags;
 
 	u32 frame_count, lowfi_count;
 
@@ -754,7 +777,7 @@ struct _rrf_construct {
 		_rrf_header header{};
 
 		header.rrf_version = rrf_version;
-		header.is_16bit_mantissa = is_16bit_mantissa;
+		header.flags = flags;
 
 		header.frame_count = frame_count;
 		header.lowfi_count = lowfi_count;
@@ -821,7 +844,7 @@ struct _rrf_construct {
 
 				auto& d{ header.high_float[i].mantissa };
 
-				const auto& comp{ man[i].get_comp(is_16bit_mantissa) };
+				const auto& comp{ man[i].get_comp() };
 
 				d.is_compressed = 0;
 				d.size = comp.size();
@@ -880,11 +903,11 @@ void encode_delta(const _osr& r, _rrf_construct& rrf) {
 
 }
 
-void encode_replay(const char* output_file, const _osr& r, const bool is_16bit_mantissa) {
+void encode_replay(const char* output_file, const _osr& r, const u32 flags) {
 
 	_rrf_construct result{};
 	result.frame_count = r.size();
-	result.is_16bit_mantissa = is_16bit_mantissa;
+	result.flags = flags;
 
 	encode_delta(r, result);
 
@@ -899,7 +922,6 @@ void encode_replay(const char* output_file, const _osr& r, const bool is_16bit_m
 		result.sign[1].push_back({});
 
 		int P_LOWFI[2]{};
-		//u32 P_MAN[2]{};
 		bool P_SIGN[2]{};
 
 		for (auto v : r) {
@@ -914,9 +936,9 @@ void encode_replay(const char* output_file, const _osr& r, const bool is_16bit_m
 				P_LOWFI[1] = lowfi[1];
 			);
 
-			kd.tick(v.keys);
+			const auto key_pressed{ kd.tick(v.keys) };
 
-			const bool is_key{ v.keys != 0 };
+			const bool is_key{ (flags & RRF_FLAG::force_lossless) ||(v.keys != 0) };
 
 			if (is_key == 0) {
 
@@ -934,9 +956,10 @@ void encode_replay(const char* output_file, const _osr& r, const bool is_16bit_m
 
 				exp_data[i].push_back(pos[i].p.exponent);
 
-				//const auto X{ mantissa_sub(pos[i].p.mantissa, P_MAN[i]) };
-				//
-				//P_MAN[i] = u32(pos[i].p.mantissa);
+				//if ((key_pressed || ((flags & RRF_FLAG::exp23_check) > 0)) == 0) {
+				//	pos[i].p.mantissa >>= 7;
+				//	pos[i].p.mantissa <<= 7;
+				//}
 
 				result.man[i].push_back(pos[i].p.mantissa);
 
@@ -978,7 +1001,7 @@ void encode_replay(const char* output_file, const _osr& r, const bool is_16bit_m
 
 }
 
-void osr_to_rrf(const char* in_file, const char* out_file, bool osr_has_header = 1, const bool is_16bit_mantissa = 1){
+void osr_to_rrf(const char* in_file, const char* out_file, const u32 flags){
 
 	const auto& raw_file{read_file(in_file)};
 
@@ -990,7 +1013,7 @@ void osr_to_rrf(const char* in_file, const char* out_file, bool osr_has_header =
 	const u8* lzma_start{ raw_file.data() };
 	size_t lzma_size{ raw_file.size() };
 
-	if (osr_has_header) {
+	if (flags & RRF_FLAG::has_osr_header) {
 
 		const auto skip_string = [&]() {
 
@@ -1115,7 +1138,7 @@ void osr_to_rrf(const char* in_file, const char* out_file, bool osr_has_header =
 		replay_stream.pop_back();
 	}
 
-	encode_replay(out_file, replay_stream, is_16bit_mantissa);
+	encode_replay(out_file, replay_stream, flags);
 
 }
 

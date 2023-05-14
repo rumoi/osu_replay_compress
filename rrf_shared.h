@@ -327,9 +327,19 @@ struct _data_chunk {
 	u32 size : 31, is_compressed : 1;
 };
 
+enum RRF_FLAG {
+
+	has_osr_header = 1 << 0,
+	force_lossless = 1 << 1,
+	//mantissa_all_23 = 1 << 2,
+
+	//exp23_check = force_lossless | mantissa_all_23,
+};
+
+
 struct _rrf_header {
 
-	u32 rrf_version : 4, is_16bit_mantissa:1, padding_0 : 27;
+	u32 rrf_version : 4, flags : 28;
 	u32 frame_count, lowfi_count, lowf_delta_y_start_bit;
 
 	_data_chunk time_table;

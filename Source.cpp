@@ -9,7 +9,8 @@ int main(const int param_count, char** param) {
 		return 0;
 	}
 
-	osr_to_rrf(param[1], param[2]);
+	osr_to_rrf(param[1], param[2], RRF_FLAG::has_osr_header);
+
 	printf("\n Final Compression Ratio: %f\n", float(DIAG::OUTPUT_SIZE) / float(DIAG::INPUT_SIZE));
 
 }

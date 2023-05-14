@@ -331,13 +331,27 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 
 				bit_stream d_buff{};
 
-				constexpr size_t start[]{ 0, 16, 20, 23 };
+				constexpr size_t start[]{ 0, 16, 24 };
 				
-				for (size_t mc{}; mc < (header->is_16bit_mantissa ? 1 : 3); ++mc) {
+				for (size_t mc{}; mc < 2; ++mc) {
 
-					const auto size{ *(u32*)d };
+					auto size{ *(u32*)d };
 
-					lzma_decomp(d_buff.data, d + 4, size);
+					if (size == 0) {
+						d += 4;
+						continue;
+					}
+
+					if (size & ((u32)1 << 31)) {
+						size <<= 1;
+						size >>= 1;
+						lzma_decomp(d_buff.data, d + 4, size);
+					} else {
+						d_buff.data.resize(size);
+						memcpy(d_buff.data.data(), d + 4, size);
+					}
+
+					u8 last{};
 
 					size_t di{};
 					for (size_t i{}; i < key_frame_count; ++i) {
@@ -347,6 +361,16 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 						for (size_t z{ start[mc] }; z < start[mc + 1]; ++z)
 							mantissa |= (u32(d_buff[di++]) << z);
 
+
+						if (mc == 1) {
+
+							u8 t{ u8(mantissa >> 16) };
+
+							t += last;
+							last = t;
+							mantissa = (t & 0b1111111) << 16;
+						}
+
 						float_table[fc + 2 * i].p.mantissa |= mantissa;
 
 					}
@@ -355,10 +379,7 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 					d_buff.clear();
 
 				}
-
-				for (size_t i{1}; i < key_frame_count; ++i)
-					float_table[fc + 2 * i].p.mantissa ^=
-						(float_table[fc + 2 * (i-1)].p.mantissa & 0b11111110000000000000000);
+				
 
 			}
 
@@ -472,7 +493,7 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 		{
 			OUTPUT += ",-12345|0|0|0";
 		}
-
+		write_file("test/TEST_STRING2.txt", OUTPUT);
 		write_file(output_file, compress_osr_string(OUTPUT));
 
 	}

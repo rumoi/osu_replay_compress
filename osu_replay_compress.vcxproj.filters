@@ -16,6 +16,9 @@
     <Filter Include="Source Files\7z">
       <UniqueIdentifier>{1970de0c-29d5-4bca-90bd-f73f5a168e95}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Header Files\zip">
+      <UniqueIdentifier>{c3d3cae1-eaec-42a6-aaa8-f3b398f15fe4}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source.cpp">
@@ -109,6 +112,78 @@
     </ClInclude>
     <ClInclude Include="rrf_write.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\7z.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\7zAlloc.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\7zBuf.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\7zCrc.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\7zTypes.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\7zVersion.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\Alloc.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\Bcj2.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\Bra.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\Compiler.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\CpuArch.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\Delta.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\DllSecur.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\LzFind.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\LzFindMt.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\LzHash.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\Lzma86.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\LzmaDec.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\LzmaEnc.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\LzmaLib.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\Precomp.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\RotateDefs.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\Sort.h">
+      <Filter>Header Files\zip</Filter>
+    </ClInclude>
+    <ClInclude Include="Lib\Threads.h">
+      <Filter>Header Files\zip</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

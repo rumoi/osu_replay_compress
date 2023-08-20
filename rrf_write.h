@@ -37,6 +37,19 @@ void unique_add(u32 v, std::vector<std::pair<u32, u32>>& b) {
 
 };
 
+u32 unique_get_(u32 v, const std::vector<std::pair<u32, u32>>& b) {
+
+	for (size_t i{}; i < b.size(); ++i) {
+
+		if (b[i].first == v) {
+			return i;
+		}
+
+	}
+	return 0;
+};
+
+
 const auto pair_sort = [](const auto& x, const auto& y) {
 	return x.second > y.second;
 };
@@ -60,6 +73,25 @@ namespace comp {
 
 		return p;
 	}
+
+	CLzmaEncProps screen_space_sign_sustain() {
+
+		CLzmaEncProps p;
+		LzmaEncProps_Init(&p);
+
+		p.fb = 32;
+		p.level = 5;
+		p.mc = 16;
+
+		p.numHashBytes = 5;
+
+		p.lc = 3;
+
+		p.pb = 0;
+
+		return p;
+	}
+
 
 	CLzmaEncProps exp_stream_prop() {
 
@@ -96,6 +128,25 @@ namespace comp {
 
 		return p;
 	}
+
+	CLzmaEncProps pos_delta_prop(const size_t size) {
+
+		CLzmaEncProps p;
+		LzmaEncProps_Init(&p);
+
+		p.fb = 32;
+		p.level = 5;
+		p.mc = 8;
+
+		p.numHashBytes = 4;
+
+		p.lc = (size / 8) >= 10238 ? 4 : 3;
+
+		p.pb = 0;
+
+		return p;
+	}
+
 
 	CLzmaEncProps key_data_prop() {
 
@@ -198,39 +249,6 @@ namespace comp {
 		p.lc = 4;
 		
 		p.pb = 1;//2 byte alignment
-
-		return p;
-	}
-
-	CLzmaEncProps man_4_prop() {
-
-		CLzmaEncProps p;
-		LzmaEncProps_Init(&p);
-
-		p.fb = 32;
-		p.level = 5;
-		p.mc = 16;
-
-		p.lc = 3;
-
-		p.pb = 0;
-
-		return p;
-	}
-
-	CLzmaEncProps man_3_prop() {
-
-		CLzmaEncProps p;
-		LzmaEncProps_Init(&p);
-
-		p.fb = 32;
-		p.level = 5;
-		p.mc = 16;
-		//p.btMode = 1;
-
-		p.lc = 1;
-
-		p.pb = 0;
 
 		return p;
 	}
@@ -749,16 +767,28 @@ struct _time_delta_stream {
 
 };
 
+struct _screen_space_stream {
+
+	bit_stream sign_sustain;
+	bit_stream delta;
+
+};
+
 struct _rrf_construct {
 
 	u8 rrf_version;
 	u32 flags;
+	float screen_ratio;
+
+	std::vector<u8> osr_header_bytes;
 
 	u32 frame_count, lowfi_count;
 
 	_time_delta_stream time_delta;
 
 	bit_stream key_data;
+
+	_screen_space_stream screen_space[2];
 
 	_low_fidelity_delta_stream lowfi[2];
 
@@ -774,13 +804,25 @@ struct _rrf_construct {
 
 		data.resize(sizeof(_rrf_header));
 
+		if (flags & RRF_FLAG::has_osr_header) {
+
+			if (osr_header_bytes.size() == 0)
+				add_to_u8(data, 0);
+			else {
+
+				data.resize(data.size() + osr_header_bytes.size());
+				memcpy(data.data() + sizeof(_rrf_header), osr_header_bytes.data(), osr_header_bytes.size());
+
+			}
+
+		}
+
 		_rrf_header header{};
 
 		header.rrf_version = rrf_version;
 		header.flags = flags;
 
 		header.frame_count = frame_count;
-		header.lowfi_count = lowfi_count;
 
 		{
 			auto& d{ header.time_table };
@@ -804,75 +846,103 @@ struct _rrf_construct {
 			dc.size = pack.size();
 
 		};
+		
 
 		write_stream(header.time_stream, time_delta.stream, comp::delta_prop(time_delta.stream.size()));
 
 		write_stream(header.composite_key, key_data, comp::composite_key_prop());
 
-		for (size_t i{}; i < 2; ++i) {
+		if (flags & RRF_FLAG::using_screenspace) {
 
-			header.high_float[i].exponent.chunk_count = exp[i].chunk_count;
-			header.high_float[i].exponent.sustain_4bits = exp[i].sustain_4bits;
+			header.screen_ratio = screen_ratio;
 
-			{
+			write_stream(header.screen_space[0],
+				screen_space[0].delta,
+				comp::pos_delta_prop(screen_space[0].delta.size())
+			);
+			write_stream(header.screen_space[1],
+				screen_space[1].delta,
+				comp::pos_delta_prop(screen_space[1].delta.size())
+			);
 
-				auto& d{ header.high_float[i].sign };
+			write_stream(header.screen_space_sign_sustain,
+				combine_bool_vector(screen_space[0].sign_sustain, screen_space[1].sign_sustain),
+				comp::screen_space_sign_sustain()
+			);
 
-				d.is_compressed = 0;
-				d.size = sign[i].size() * sizeof(sign[i][0]);
 
-				add_to_u8(data, sign[i]);
+		}
+		else {
+
+			header.lowfi_count = lowfi_count;
+
+			for (size_t i{}; i < 2; ++i) {
+
+				header.high_float[i].exponent.chunk_count = exp[i].chunk_count;
+				header.high_float[i].exponent.sustain_4bits = exp[i].sustain_4bits;
+
+				{
+
+					auto& d{ header.high_float[i].sign };
+
+					d.is_compressed = 0;
+					d.size = sign[i].size() * sizeof(sign[i][0]);
+
+					add_to_u8(data, sign[i]);
+
+				}
+
+
+				{
+
+					auto& d{ header.high_float[i].exponent.absolute_table };
+
+					d.is_compressed = 0;
+					d.size = exp[i].abs_table_stream.data.size();
+
+					add_to_u8(data, exp[i].abs_table_stream.data);
+
+				}
+
+				write_stream(header.high_float[i].exponent.sustain, exp[i].sustain_data, comp::exp_sustain_prop());
+				write_stream(header.high_float[i].exponent.stream, exp[i].stream, comp::exp_stream_prop());
+
+				{
+
+					auto& d{ header.high_float[i].mantissa };
+
+					const auto& comp{ man[i].get_comp() };
+
+					d.is_compressed = 0;
+					d.size = comp.size();
+
+					add_to_u8(data, comp);
+
+				}
 
 			}
 
-
+			write_stream(header.lowf_sign,
+				combine_bool_vector(lowfi[0].sign_sustain, lowfi[1].sign_sustain),
+				comp::lowf_sign_prop());
 			{
 
-				auto& d{ header.high_float[i].exponent.absolute_table };
+				header.lowf_delta_y_start_bit = lowfi[0].lowf_value.size();
 
-				d.is_compressed = 0;
-				d.size = exp[i].abs_table_stream.data.size();
+				const auto& comp{ combine_bool_vector(lowfi[0].lowf_value, lowfi[1].lowf_value) };
 
-				add_to_u8(data, exp[i].abs_table_stream.data);
-
-			}
-
-			write_stream(header.high_float[i].exponent.sustain, exp[i].sustain_data, comp::exp_sustain_prop());
-			write_stream(header.high_float[i].exponent.stream, exp[i].stream, comp::exp_stream_prop());
-
-			{
-
-				auto& d{ header.high_float[i].mantissa };
-
-				const auto& comp{ man[i].get_comp() };
-
-				d.is_compressed = 0;
-				d.size = comp.size();
-
-				add_to_u8(data, comp);
+				write_stream(header.lowf_delta, comp, comp::lowf_prop(comp.size()));
 
 			}
 
 		}
 
-		write_stream(header.lowf_sign,
-			combine_bool_vector(lowfi[0].sign_sustain, lowfi[1].sign_sustain),
-			comp::lowf_sign_prop());
-		{
-
-			header.lowf_delta_y_start_bit = lowfi[0].lowf_value.size();
-
-			const auto& comp{ combine_bool_vector(lowfi[0].lowf_value, lowfi[1].lowf_value) };
-
-			write_stream(header.lowf_delta, comp, comp::lowf_prop(comp.size()));
-
-		}
 
 		memcpy(data.data(), &header, sizeof(header));
 
 		header.print_sizes();
 
-		DIAG::OUTPUT_SIZE = data.size();
+		DIAG::OUTPUT_SIZE = data.size() - osr_header_bytes.size();
 
 		write_file(output_file, data);
 
@@ -903,11 +973,165 @@ void encode_delta(const _osr& r, _rrf_construct& rrf) {
 
 }
 
-void encode_replay(const char* output_file, const _osr& r, const u32 flags) {
+float get_screen_ratio(const _osr& r) {
+
+	constexpr static float field_height{ 480.f };
+	constexpr static float playfield_height{ 384.f };
+
+	std::vector<std::pair<u32, u32>> unique_position{};
+
+	for (size_t i{ 2 }; i < std::max(r.size(), (size_t)1) - 1; ++i)
+		unique_add(std::bit_cast<u32>(r[i].y), unique_position);
+
+	float predicted_ratio{ 1.f };
+	int matched_frames{ 0 };
+	
+	for (size_t i{ 600 }; i <= 2400; ++i) {
+
+		int matched{};
+
+		const float screen_ratio{ float(i) / field_height };
+
+		const float game_height{ playfield_height * screen_ratio };
+
+		const float game_ratio{ game_height / playfield_height };
+
+		for (auto y : unique_position) {
+	
+			float y_pos{ std::bit_cast<float>(y.first) };
+
+			const float sp{ y_pos * game_ratio };
+
+			// osu! incorrectly rounds the floats as it serializes, this means every single replay is actually slightly incorrect.
+			// Funnily enough doing this pulls back more information than the default .osr format
+			constexpr static float epsilon{ 0.001f };
+
+			if (abs(std::round(sp) - sp) > epsilon)
+				break;
+
+			++matched;
+		}
+	
+		if (matched > matched_frames) {
+
+			matched_frames = matched;
+			predicted_ratio = game_ratio;
+
+			if (matched_frames == unique_position.size())
+				break;
+		}
+	
+	}
+
+	return (matched_frames == unique_position.size()) ? predicted_ratio : 0.f;
+
+}
+
+bool encode_replay_screen_space(const char* output_file, const _osr& r, const u32 flags, std::vector<u8> osr_header_bytes = std::vector<u8>{}) {
+
+	const auto screen_ratio{ get_screen_ratio(r) };
+
+	if (screen_ratio == 0.f)
+		return 0;
+
+	_rrf_construct result{};
+
+	result.frame_count = r.size();
+	result.flags = flags | RRF_FLAG::using_screenspace;
+	result.osr_header_bytes = std::move(osr_header_bytes);
+
+	encode_delta(r, result);
+
+	_key_data_constructor kd{};
+
+	result.screen_ratio = screen_ratio;
+
+	const float game_ratio{ screen_ratio };
+
+	{
+
+		const auto error_quantize = [game_ratio](float x) -> int {
+			return (int)std::round(x * game_ratio);
+		};
+
+		{
+
+			bool SP_sign[2]{};
+			int SP[2]{};
+
+			std::vector<u32> sign[2];
+
+			sign[0].push_back({});
+			sign[1].push_back({});
+
+			for (auto& f : r) {
+
+				kd.tick(f.keys);
+
+				const int ss_pos[2]{
+					error_quantize(f.x), error_quantize(f.y)
+				};
+
+				for (size_t i{}; i < 2; ++i) {
+
+					const int delta{ ss_pos[i] - SP[i] };
+					SP[i] = ss_pos[i];
+
+					if (const auto cs{ (delta < 0) }; delta == 0 || cs == SP_sign[i])
+						++sign[i].back();
+					else {
+						SP_sign[i] = cs;
+						sign[i].push_back(1);
+					}
+
+					write_bucket(abs(delta), result.screen_space[i].delta, SCREEN_SPACE_DELTA);
+
+				}
+
+			}
+
+			for (size_t i{}; i < 2; ++i)
+				for (const auto& s : sign[i]) 
+					write_bucket(s, result.screen_space[i].sign_sustain, SCREEN_SPACE_SIGN_SUSTAIN);
+
+		}
+
+		for (auto& v : kd.k1)
+			write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+
+		for (auto& v : kd.k2)
+			write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+
+		for (auto& v : kd.m1)
+			write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+
+		for (auto& v : kd.m2)
+			write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+
+		for (auto& v : kd.smoke)
+			write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+
+		result.write(output_file);
+
+	}
+
+	return 1;
+
+}
+
+void encode_replay(const char* output_file, const _osr& r, const u32 flags, std::vector<u8> osr_header_bytes = std::vector<u8>{}) {
+
+	if (encode_replay_screen_space(output_file, r, flags, osr_header_bytes))
+		return;
 
 	_rrf_construct result{};
 	result.frame_count = r.size();
 	result.flags = flags;
+
+	result.osr_header_bytes = std::move(osr_header_bytes);
+
+	if(osr_header_bytes.size())
+		result.osr_header_bytes = std::move(osr_header_bytes);
 
 	encode_delta(r, result);
 
@@ -963,7 +1187,7 @@ void encode_replay(const char* output_file, const _osr& r, const u32 flags) {
 
 				result.man[i].push_back(pos[i].p.mantissa);
 
-				if (P_SIGN[i] == pos[i].p.sign) [[likely]]
+				if (P_SIGN[i] == pos[i].p.sign || pos[i].f == 0.f) [[likely]]
 					++result.sign[i].back();
 				else {
 					result.sign[i].push_back(1);
@@ -998,7 +1222,6 @@ void encode_replay(const char* output_file, const _osr& r, const u32 flags) {
 
 	result.write(output_file);
 
-
 }
 
 void osr_to_rrf(const char* in_file, const char* out_file, const u32 flags){
@@ -1012,6 +1235,8 @@ void osr_to_rrf(const char* in_file, const char* out_file, const u32 flags){
 
 	const u8* lzma_start{ raw_file.data() };
 	size_t lzma_size{ raw_file.size() };
+
+	std::vector<u8> header_bytes{};
 
 	if (flags & RRF_FLAG::has_osr_header) {
 
@@ -1055,6 +1280,13 @@ void osr_to_rrf(const char* in_file, const char* out_file, const u32 flags){
 
 		padv(u64); // time_stamp
 
+		{
+			const auto h_size{ size_t(lzma_start - raw_file.data()) };
+			add_to_u8(header_bytes, h_size);
+			header_bytes.resize(h_size + 4);
+			memcpy(header_bytes.data() + 4, raw_file.data(), h_size);
+		}
+
 		padv(u32); // lzma_size - is this in the raw stream too?
 
 		#undef padv
@@ -1067,7 +1299,6 @@ void osr_to_rrf(const char* in_file, const char* out_file, const u32 flags){
 		return;
 
 	std::vector<u8> osr_string;
-
 
 	DIAG::INPUT_SIZE = lzma_size;
 
@@ -1107,7 +1338,9 @@ void osr_to_rrf(const char* in_file, const char* out_file, const u32 flags){
 
 			sep[c++] = p;
 
-			if (c == 3) break;
+			if (c == 3)
+				break;
+
 		}
 
 		std::from_chars((const char*)frame_start, (const char*)sep[0], f.delta);
@@ -1118,6 +1351,7 @@ void osr_to_rrf(const char* in_file, const char* out_file, const u32 flags){
 		replay_stream.push_back(f);
 
 		frame_start = end + 1;
+
 	};
 
 	for (size_t i{}, size{ osr_string.size() }; i < size; ++i) {
@@ -1138,8 +1372,6 @@ void osr_to_rrf(const char* in_file, const char* out_file, const u32 flags){
 		replay_stream.pop_back();
 	}
 
-	encode_replay(out_file, replay_stream, flags);
+	encode_replay(out_file, replay_stream, flags, std::move(header_bytes));
 
 }
-
-

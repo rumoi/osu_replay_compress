@@ -3,6 +3,50 @@
 #include "rrf_shared.h"
 #include <charconv>
 
+namespace rrf {
+
+	void lzma_decomp(std::vector<u8>& ret, const u8* data, size_t size) {
+
+		size_t decomp_size{ *(u32*)data };
+
+		ret.resize(decomp_size);
+
+		size_t input_size{ size - (4 + LZMA_PROPS_SIZE) };
+		ELzmaStatus lzma_status{};
+
+		const auto rcode{
+			LzmaDecode(ret.data(), &decomp_size, data + LZMA_PROPS_SIZE + 4, &input_size, data + 4,
+			LZMA_PROPS_SIZE, LZMA_FINISH_END, &lzma_status, &lzma_allocFuncs)
+		};
+
+		if (rcode != SZ_OK) {
+			ret.clear();
+			return;
+		}
+
+		ret.resize(decomp_size);
+
+	};
+
+	std::vector<u8> read_chunk(const _data_chunk dc, u8*& data) {
+
+		std::vector<u8> ret{};
+
+		if (dc.is_compressed) {
+			lzma_decomp(ret, data, dc.size);
+		}
+		else {
+			ret.resize(dc.size);
+			memcpy(ret.data(), data, dc.size);
+		}
+
+		data += dc.size;
+
+		return ret;
+	};
+
+}
+
 void extract_exponent_stream(const u32 key_frame_count, floatp* output,
 	const u8* absolute_table,
 	const bit_stream& stream_bit,
@@ -123,116 +167,83 @@ std::vector<u8> compress_osr_string(std::string_view string) {
 	return output;
 }
 
-bool rrf_to_osr(const char* input_file, const char* output_file) {
+void construct_screen_space(const _rrf_header* header, u8*& data, std::vector<_osr_frame>& R) {
 
-	const auto& raw_bytes{ read_file(input_file) };
-
-	const _rrf_header* header{ (const _rrf_header*)raw_bytes.data() };
-
-	u8* data{ (u8*)raw_bytes.data() + sizeof(_rrf_header) };
+	std::vector<int> delta_table[2];
 	
-	std::vector<_osr_frame> R; R.resize(header->frame_count);
+	delta_table[0].resize(header->frame_count);
+	delta_table[1].resize(header->frame_count);
 
-	const auto lzma_decomp = [](std::vector<u8>& ret, const u8* data, size_t size) {
+	{
+		const auto read_delta_stream = [](const bit_stream stream, std::vector<int>& output) {
+			size_t i{};
 
-		size_t decomp_size{ *(u32*)data };
+			for (auto& v : output)
+				v = read_bucket(stream, i, SCREEN_SPACE_DELTA);
 
-		ret.resize(decomp_size);
-
-		size_t input_size{ size - (4 + LZMA_PROPS_SIZE) };
-		ELzmaStatus lzma_status{};
-
-		const auto rcode{
-			LzmaDecode(ret.data(), &decomp_size, data + LZMA_PROPS_SIZE + 4, &input_size, data + 4,
-			LZMA_PROPS_SIZE, LZMA_FINISH_END, &lzma_status, &lzma_allocFuncs)
 		};
 
-		if (rcode != SZ_OK) {
-			ret.clear();
-			return;
-		}
-
-		ret.resize(decomp_size);
-
-	};
-
-	const auto read_chunk = [&](const _data_chunk dc) {
-
-		std::vector<u8> ret{};
-
-		if (dc.is_compressed) {
-			lzma_decomp(ret, data, dc.size);
-		}
-		else {
-			ret.resize(dc.size);
-			memcpy(ret.data(), data, dc.size);
-		}
-
-		data += dc.size;
-
-		return ret;
-
-	};
-
-	// Delta
-	{ 
-
-		std::vector<int> delta_table{};
-
-		{
-			size_t bit_offset{};
-			bit_stream bs{ std::move(read_chunk(header->time_table)) };
-
-			delta_table.resize(small_read<5>(bs, bit_offset));
-
-			for (auto& v : delta_table)
-				v = std::bit_cast<int>(small_read<5>(bs, bit_offset));
-
-		}
-
-		size_t bit_offset{};
-		bit_stream bs{};
-
-		bs.data = std::move(read_chunk(header->time_stream));
-
-		for (auto& v : R)
-			v.delta = delta_table[read_bucket(bs, bit_offset, BUCKET_TIME_STREAM)];
-
+		for (size_t i{}; i < 2; ++i)
+			read_delta_stream(bit_stream{ std::move(rrf::read_chunk(header->screen_space[i], data)) }, delta_table[i]);
 	}
 
-	// Keys
 	{
-		size_t bit_offset{};
 
-		bit_stream bs{ std::move(read_chunk(header->composite_key)) };
+		const bit_stream sign_stream{ bit_stream{rrf::read_chunk(header->screen_space_sign_sustain, data)} };
 
-		const auto read_key = [&](u32 flag_bits) {
+		const auto read_sign_stream = [](const bit_stream& stream, std::vector<int>& output, size_t& i) {
 
-			int COUNT{ -1 };
-			for (bool flag{}; COUNT < (int)header->frame_count && bit_offset < bs.size(); ) {
+			size_t sign{}, frame{};
 
-				const auto sustain{
-					1 + read_bucket(bs, bit_offset, BUCKET_COMP_KEYS)
-				};
+			while (frame < output.size()) {
 
-				if (flag) {
-					for (size_t i{}; i < sustain; ++i)
-						R[COUNT + i].keys |= flag_bits;
-				}
+				const auto sustain{ read_bucket(stream, i, SCREEN_SPACE_SIGN_SUSTAIN) };
 
-				COUNT += sustain;
-				flag = !flag;
+				if (sign) {
+
+					for (size_t z{}; z < sustain; ++z) {
+
+						output[frame] = -output[frame];
+						++frame;
+					}
+
+				} else frame += sustain;
+
+				sign = !sign;
+
 			}
 
 		};
 
-		read_key(1 | 4);
-		read_key(2 | 8);
-		read_key(1);
-		read_key(2);
-		read_key(16);
+		size_t i{};
+		read_sign_stream(sign_stream, delta_table[0], i);
+		read_sign_stream(sign_stream, delta_table[1], i);
 
 	}
+
+	int PREV[2]{};
+
+	//const float RR{ 1.f / header->screen_ratio };
+
+	for (size_t i{}; i < header->frame_count; ++i) {
+		
+		float* O = &R[i].x;
+
+		for (size_t z{}; z < 2; ++z) {
+
+			int v{ PREV[z] + delta_table[z][i] };
+			PREV[z] = v;
+
+			//O[z] = float(v) * RR;
+			O[z] = float(v) / header->screen_ratio;
+
+		}
+
+	}
+
+}
+
+void construct_game_space(const _rrf_header* header, u8*& data, std::vector<_osr_frame>& R) {
 
 	std::vector<floatp> float_table;
 	// Construct float table
@@ -248,8 +259,8 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 
 			// Sign
 			{
-				
-				const auto& raw{ read_chunk(header->high_float[fc].sign) };
+
+				const auto& raw{ rrf::read_chunk(header->high_float[fc].sign, data) };
 
 				const auto count{ raw.size() / 4 };
 
@@ -280,7 +291,7 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 				u8 absolute_table[256];
 
 				{
-					bit_stream table_stream{ std::move(read_chunk(header->high_float[fc].exponent.absolute_table)) };
+					bit_stream table_stream{ std::move(rrf::read_chunk(header->high_float[fc].exponent.absolute_table, data)) };
 
 					u8* v{ absolute_table };
 
@@ -310,8 +321,8 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 
 				bit_stream sustain_bit{}, stream_bit{};
 
-				sustain_bit.data = std::move(read_chunk(header->high_float[fc].exponent.sustain));
-				stream_bit.data = std::move(read_chunk(header->high_float[fc].exponent.stream));
+				sustain_bit.data = std::move(rrf::read_chunk(header->high_float[fc].exponent.sustain, data));
+				stream_bit.data = std::move(rrf::read_chunk(header->high_float[fc].exponent.stream, data));
 
 
 				extract_exponent_stream(key_frame_count, float_table.data() + fc,
@@ -324,7 +335,7 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 			// Mantissa
 			{
 
-				const auto mantissa_buffer{ read_chunk(header->high_float[fc].mantissa) };
+				const auto mantissa_buffer{ rrf::read_chunk(header->high_float[fc].mantissa, data) };
 
 				floatp* o{ float_table.data() + fc };
 				const u8* d{ mantissa_buffer.data() };
@@ -332,7 +343,7 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 				bit_stream d_buff{};
 
 				constexpr size_t start[]{ 0, 16, 24 };
-				
+
 				for (size_t mc{}; mc < 2; ++mc) {
 
 					auto size{ *(u32*)d };
@@ -345,8 +356,9 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 					if (size & ((u32)1 << 31)) {
 						size <<= 1;
 						size >>= 1;
-						lzma_decomp(d_buff.data, d + 4, size);
-					} else {
+						rrf::lzma_decomp(d_buff.data, d + 4, size);
+					}
+					else {
 						d_buff.data.resize(size);
 						memcpy(d_buff.data.data(), d + 4, size);
 					}
@@ -379,22 +391,22 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 					d_buff.clear();
 
 				}
-				
+
 
 			}
 
 		}
 
 	}
-	
+
 	std::vector<bool> lowf_sign[2];
 
 	// Set up lowf sign table
 	{
 
 		bit_stream lowf_sign_stream{};
-		
-		lowf_sign_stream.data = std::move(read_chunk(header->lowf_sign));
+
+		lowf_sign_stream.data = std::move(rrf::read_chunk(header->lowf_sign, data));
 
 		const auto MAX_BIT{ lowf_sign_stream.size() };
 
@@ -418,14 +430,14 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 
 		}
 	}
-	
+
 	// Now we can start reconstructing the full stream.
 
 	size_t lowfi_x_index{}, lowfi_y_index{ header->lowf_delta_y_start_bit };
 
 	bit_stream lowf_delta_stream{};
 
-	lowf_delta_stream.data = std::move(read_chunk(header->lowf_delta));
+	lowf_delta_stream.data = std::move(rrf::read_chunk(header->lowf_delta,data));
 
 	int R_X{}, R_Y{};
 
@@ -444,7 +456,8 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 			R_X = (int)::roundf(R[i].x);
 			R_Y = (int)::roundf(R[i].y);
 
-		} else {
+		}
+		else {
 
 			auto _x{ (int)read_bucket(lowf_delta_stream, lowfi_x_index, 4, 4, 4, 8) };
 			auto _y{ (int)read_bucket(lowf_delta_stream, lowfi_y_index, 4, 4, 4, 8) };
@@ -461,6 +474,95 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 		}
 
 	}
+
+
+}
+
+bool rrf_to_osr(const char* input_file, const char* output_file) {
+
+	const auto& raw_bytes{ read_file(input_file) };
+
+	const _rrf_header* header{ (const _rrf_header*)raw_bytes.data() };
+
+	u8* data{ (u8*)raw_bytes.data() + sizeof(_rrf_header) };
+	
+	std::vector<_osr_frame> R; R.resize(header->frame_count);
+
+	std::vector<u8> final_file_output;
+
+	if (header->flags & RRF_FLAG::has_osr_header) {
+
+		final_file_output.resize(*(u32*)data);
+
+		memcpy(final_file_output.data(), data + 4, final_file_output.size());
+
+		data += 4 + final_file_output.size();
+
+	}
+
+	// Delta
+	{ 
+
+		std::vector<int> delta_table{};
+
+		{
+			size_t bit_offset{};
+			bit_stream bs{ std::move(rrf::read_chunk(header->time_table, data)) };
+
+			delta_table.resize(small_read<5>(bs, bit_offset));
+
+			for (auto& v : delta_table)
+				v = std::bit_cast<int>(small_read<5>(bs, bit_offset));
+
+		}
+
+		size_t bit_offset{};
+		bit_stream bs{};
+
+		bs.data = std::move(rrf::read_chunk(header->time_stream, data));
+
+		for (auto& v : R)
+			v.delta = delta_table[read_bucket(bs, bit_offset, BUCKET_TIME_STREAM)];
+
+	}
+
+	// Keys
+	{
+		size_t bit_offset{};
+
+		bit_stream bs{ std::move(rrf::read_chunk(header->composite_key, data)) };
+
+		const auto read_key = [&](u32 flag_bits) {
+
+			int COUNT{ -1 };
+			for (bool flag{}; COUNT < (int)header->frame_count && bit_offset < bs.size(); ) {
+
+				const auto sustain{
+					1 + read_bucket(bs, bit_offset, BUCKET_COMP_KEYS)
+				};
+
+				if (flag) {
+					for (size_t i{}; i < sustain; ++i)
+						R[COUNT + i].keys |= flag_bits;
+				}
+
+				COUNT += sustain;
+				flag = !flag;
+			}
+
+		};
+
+		read_key(1 | 4);
+		read_key(2 | 8);
+		read_key(1);
+		read_key(2);
+		read_key(16);
+
+	}
+
+
+	((header->flags & RRF_FLAG::using_screenspace) ? construct_screen_space : construct_game_space)(header, data, R);
+		
 
 	{
 
@@ -493,8 +595,20 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 		{
 			OUTPUT += ",-12345|0|0|0";
 		}
-		write_file("test/TEST_STRING2.txt", OUTPUT);
-		write_file(output_file, compress_osr_string(OUTPUT));
+
+		const auto& compressed_string{ compress_osr_string(OUTPUT) };
+
+		if (header->flags & RRF_FLAG::has_osr_header)
+			add_to_u8(final_file_output, compressed_string.size());
+		
+		add_to_u8(final_file_output, compressed_string);
+
+		if (header->flags & RRF_FLAG::has_osr_header) {
+			add_to_u8(final_file_output, 0);// score id
+			add_to_u8(final_file_output, 0);
+		}
+
+		write_file(output_file, final_file_output);
 
 	}
 

@@ -13,11 +13,13 @@
 #define __RRF_SHARED_H
 
 #define BUCKET_COMP_KEYS 8,16
+#define SCREEN_SPACE_DELTA 4, 4, 4, 8
+#define SCREEN_SPACE_SIGN_SUSTAIN 8
 
 #define EXP_ICHUNK_CONSUME 1,2,2
 #define EXP_ICHUNK_REPEAT 2,2,4
 
-#define BUCKET_TIME_STREAM 4,4,4
+#define BUCKET_TIME_STREAM 4,4,4,4
 
 namespace DIAG {
 
@@ -100,7 +102,6 @@ std::vector<u8> read_file(const char* file_name) {
 
 	return ret;
 }
-
 
 struct bit_stream {
 
@@ -188,10 +189,8 @@ void small_write(u32 value, bit_stream& output) {
 template<size_t BIT_WRITE>
 u32 small_read(const bit_stream& input, size_t& i) {
 
-	if (i >= input.max_size()) {
-
+	if (i >= input.max_size())
 		return 0;
-	}
 
 	if constexpr (BIT_WRITE == 1)
 		return input[i++];
@@ -214,6 +213,7 @@ u32 small_read(const bit_stream& input, size_t& i) {
 	for (size_t size{ input.max_size() }; (i + c) < size; ++c)
 		if (input[i + c] == 0)
 			break;
+
 	bit_count += c;
 	i += c + 1;
 	c = 0;
@@ -282,6 +282,8 @@ u32 read_bucket(const bit_stream& input, size_t& i, const T... bits) {
 
 	u32 result{};
 
+	const auto max_size{ input.max_size() };
+
 	bool done{};
 
 	const auto read = [&](const size_t b) {
@@ -293,8 +295,9 @@ u32 read_bucket(const bit_stream& input, size_t& i, const T... bits) {
 
 		ON_SCOPE_EXIT(result += v; );
 
-		for (size_t z{}; z < b; ++z)
+		for (size_t z{}; z < b && i < max_size; ++z) {
 			v |= u32(input[i++] != 0) << z;
+		}
 
 		if (v != (1 << b) - 1) {
 			done = 1;
@@ -311,12 +314,12 @@ u32 read_bucket(const bit_stream& input, size_t& i, const T... bits) {
 
 	u32 bit_count{};
 
-	for (size_t z{}; z < OVERFLOW_BITS; ++z)
+	for (size_t z{}; z < OVERFLOW_BITS && i < max_size; ++z)
 		bit_count |= u32(input[i++] != 0) << z;
 
 	u32 v{ (u32)1 << bit_count };
 
-	for (size_t z{}; z < bit_count; ++z)
+	for (size_t z{}; z < bit_count && i < max_size; ++z)
 		v |= u32(input[i++] != 0) << z;
 
 	return result + v - 1;
@@ -330,8 +333,8 @@ struct _data_chunk {
 enum RRF_FLAG {
 
 	has_osr_header = 1 << 0,
-	force_lossless = 1 << 1,
-	//mantissa_all_23 = 1 << 2,
+	force_lossless = 1 << 1, // Only affects raw input replays
+	using_screenspace = 1 << 2,
 
 	//exp23_check = force_lossless | mantissa_all_23,
 };
@@ -340,37 +343,62 @@ enum RRF_FLAG {
 struct _rrf_header {
 
 	u32 rrf_version : 4, flags : 28;
-	u32 frame_count, lowfi_count, lowf_delta_y_start_bit;
+	u32 frame_count;
+
+	union {
+		struct {
+			u32 lowfi_count, lowf_delta_y_start_bit;
+		};
+		struct {
+			float screen_ratio;
+		};
+		
+	};
 
 	_data_chunk time_table;
 	_data_chunk time_stream;
 
 	_data_chunk composite_key;
 
-	struct {
-
-		_data_chunk sign;
+	union {
 
 		struct {
 
-			u32 chunk_count : 31, sustain_4bits : 1;
+			_data_chunk screen_space_sign_sustain;
+			_data_chunk screen_space[2];
 
-			_data_chunk absolute_table;
-			_data_chunk sustain;
-			_data_chunk stream;
+		};
 
-		} exponent;
+		struct {
 
-		_data_chunk mantissa;
+			struct {
 
-	} high_float[2];
+				_data_chunk sign;
 
-	_data_chunk lowf_sign;
-	_data_chunk lowf_delta;
+				struct {
+
+					u32 chunk_count : 31, sustain_4bits : 1;
+
+					_data_chunk absolute_table;
+					_data_chunk sustain;
+					_data_chunk stream;
+
+				} exponent;
+
+				_data_chunk mantissa;
+
+			} high_float[2];
+
+			_data_chunk lowf_sign;
+			_data_chunk lowf_delta;
+
+		};
+
+	};
 
 	void print_sizes() const {
 
-		printf("rrf_header:%i\n", sizeof(*this));
+		printf("rrf_header: %i\n", sizeof(*this));
 
 		#define DO(x)printf(#x ": %i| %i\n", x.is_compressed, x.size)
 
@@ -378,24 +406,33 @@ struct _rrf_header {
 		DO(time_stream);
 		DO(composite_key);
 
-		DO(high_float[0].sign);
-		DO(high_float[0].exponent.absolute_table);
-		DO(high_float[0].exponent.sustain);
-		DO(high_float[0].exponent.stream);
-		DO(high_float[0].mantissa);
 
-		DO(high_float[1].sign);
-		DO(high_float[1].exponent.absolute_table);
-		DO(high_float[1].exponent.sustain);
-		DO(high_float[1].exponent.stream);
-		DO(high_float[1].mantissa);
+		if (flags & RRF_FLAG::using_screenspace) {
+			printf("screen_ratio: %f\n", screen_ratio);
+			DO(screen_space_sign_sustain);
+			DO(screen_space[0]);
+			DO(screen_space[1]);
+		}
+		else {
+
+			DO(high_float[0].sign);
+			DO(high_float[0].exponent.absolute_table);
+			DO(high_float[0].exponent.sustain);
+			DO(high_float[0].exponent.stream);
+			DO(high_float[0].mantissa);
+
+			DO(high_float[1].sign);
+			DO(high_float[1].exponent.absolute_table);
+			DO(high_float[1].exponent.sustain);
+			DO(high_float[1].exponent.stream);
+			DO(high_float[1].mantissa);
 
 
-		DO(lowf_sign);
-		DO(lowf_delta);
+			DO(lowf_sign);
+			DO(lowf_delta);
+		}
 
 		#undef DO
-
 
 	}
 
@@ -415,14 +452,5 @@ typedef union {
 		u32 mantissa : 23, exponent : 8, sign : 1;
 	} p;
 } floatp;
-
-//u32 mantissa_sub(u32 x, u32 y) {
-//	return x;
-//	return (x - y) & 8388607;
-//}
-//u32 mantissa_add(u32 x, u32 y) {
-//	return x;
-//	return (x + y) & 8388607;
-//}
 
 #endif

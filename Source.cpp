@@ -1,4 +1,5 @@
 #include "rrf_write.h"
+#include "rrf_read.h"
 
 int main(const int param_count, char** param) {
 
@@ -9,8 +10,17 @@ int main(const int param_count, char** param) {
 		return 0;
 	}
 
-	osr_to_rrf(param[1], param[2], RRF_FLAG::has_osr_header);
+	if(std::string_view(param[1]).find(".osr") != std::string::npos) {
 
-	printf("\n Final Compression Ratio: %f\n", float(DIAG::OUTPUT_SIZE) / float(DIAG::INPUT_SIZE));
+		osr_to_rrf(param[1], param[2], RRF_FLAG::has_osr_header);
+		printf("\n Final Compression Ratio: %f\n", float(DIAG::OUTPUT_SIZE) / float(DIAG::INPUT_SIZE));
+
+	}
+
+	if(std::string_view(param[1]).find(".rrf") != std::string::npos) {
+
+		rrf_to_osr(param[1], param[2]);
+
+	}
 
 }

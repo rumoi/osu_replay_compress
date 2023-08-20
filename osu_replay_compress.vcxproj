@@ -175,6 +175,30 @@
     <ClCompile Include="Source.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Lib\7z.h" />
+    <ClInclude Include="Lib\7zAlloc.h" />
+    <ClInclude Include="Lib\7zBuf.h" />
+    <ClInclude Include="Lib\7zCrc.h" />
+    <ClInclude Include="Lib\7zTypes.h" />
+    <ClInclude Include="Lib\7zVersion.h" />
+    <ClInclude Include="Lib\Alloc.h" />
+    <ClInclude Include="Lib\Bcj2.h" />
+    <ClInclude Include="Lib\Bra.h" />
+    <ClInclude Include="Lib\Compiler.h" />
+    <ClInclude Include="Lib\CpuArch.h" />
+    <ClInclude Include="Lib\Delta.h" />
+    <ClInclude Include="Lib\DllSecur.h" />
+    <ClInclude Include="Lib\LzFind.h" />
+    <ClInclude Include="Lib\LzFindMt.h" />
+    <ClInclude Include="Lib\LzHash.h" />
+    <ClInclude Include="Lib\Lzma86.h" />
+    <ClInclude Include="Lib\LzmaDec.h" />
+    <ClInclude Include="Lib\LzmaEnc.h" />
+    <ClInclude Include="Lib\LzmaLib.h" />
+    <ClInclude Include="Lib\Precomp.h" />
+    <ClInclude Include="Lib\RotateDefs.h" />
+    <ClInclude Include="Lib\Sort.h" />
+    <ClInclude Include="Lib\Threads.h" />
     <ClInclude Include="rrf_read.h" />
     <ClInclude Include="rrf_shared.h" />
     <ClInclude Include="rrf_write.h" />

@@ -12,9 +12,17 @@
 #ifndef __RRF_SHARED_H
 #define __RRF_SHARED_H
 
+#define RRF_VERSION 0
+
+// Bigger than 4 but compresses much better
 #define BUCKET_COMP_KEYS 8,16
-#define SCREEN_SPACE_DELTA 4, 4, 4, 8
+
+#define SCREEN_SPACE_DELTA 4,4,4,8
 #define SCREEN_SPACE_SIGN_SUSTAIN 8
+
+#define GAME_SPACE_EXP_SUSTAIN 8, 16
+
+#define GAME_SPACE_LOWFI_SIGN_SUSTAIN 4,4,4,8
 
 #define EXP_ICHUNK_CONSUME 1,2,2
 #define EXP_ICHUNK_REPEAT 2,2,4
@@ -146,7 +154,6 @@ struct bit_stream {
 
 	}
 
-
 	void append(const bit_stream& v) {
 
 		for (size_t i{}, size{ v.size() }; i < size; ++i)
@@ -158,6 +165,9 @@ struct bit_stream {
 
 template<size_t BIT_WRITE>
 void small_write(u32 value, bit_stream& output) {
+
+	if constexpr(BIT_WRITE == 1)
+		return output.push_back(value);
 
 	constexpr auto MAX_VALUE{ (1 << BIT_WRITE) - 1 };
 
@@ -334,107 +344,66 @@ enum RRF_FLAG {
 
 	has_osr_header = 1 << 0,
 	force_lossless = 1 << 1, // Only affects raw input replays
-	using_screenspace = 1 << 2,
+	keep_life_bar = 1 << 2,
 
-	//exp23_check = force_lossless | mantissa_all_23,
+	using_screenspace = 1 << 3,
+
 };
 
+enum class rrf_tag : u8 {
+
+	time_delta_table = 0,
+	time_delta_stream,
+
+	key_bit_stream,
+
+	screen_space_info,
+
+	screen_space_sign_sustain,
+	screen_space_x_delta,
+	screen_space_y_delta,
+
+	game_space_info,
+
+	game_space_lowf_sign,
+	game_space_lowf_delta,
+
+	game_space_float_x_sign,
+	game_space_float_y_sign,
+
+	game_space_float_x_exponent_absolute_table,
+	game_space_float_y_exponent_absolute_table,
+
+	game_space_float_x_exponent_sustain,
+	game_space_float_y_exponent_sustain,
+
+	game_space_float_x_exponent_stream,
+	game_space_float_y_exponent_stream,
+
+	game_space_float_x_mantissa,
+	game_space_float_y_mantissa,
+
+	osr_header,
+	life_bar,
+
+	custom_format,
+
+};
 
 struct _rrf_header {
+	u32 version, flags, frame_count, data_count;
+};
 
-	u32 rrf_version : 4, flags : 28;
-	u32 frame_count;
+struct _rrf_data_block {
+	u32 size : 31, is_compressed : 1;
+};
 
-	union {
-		struct {
-			u32 lowfi_count, lowf_delta_y_start_bit;
-		};
-		struct {
-			float screen_ratio;
-		};
-		
-	};
+struct _game_space_info {
 
-	_data_chunk time_table;
-	_data_chunk time_stream;
+	u32 lowfi_count, lowf_delta_y_start_bit;
+	float lowfi_resolution;
+	u32 exp_sustain_count[2];
 
-	_data_chunk composite_key;
-
-	union {
-
-		struct {
-
-			_data_chunk screen_space_sign_sustain;
-			_data_chunk screen_space[2];
-
-		};
-
-		struct {
-
-			struct {
-
-				_data_chunk sign;
-
-				struct {
-
-					u32 chunk_count : 31, sustain_4bits : 1;
-
-					_data_chunk absolute_table;
-					_data_chunk sustain;
-					_data_chunk stream;
-
-				} exponent;
-
-				_data_chunk mantissa;
-
-			} high_float[2];
-
-			_data_chunk lowf_sign;
-			_data_chunk lowf_delta;
-
-		};
-
-	};
-
-	void print_sizes() const {
-
-		printf("rrf_header: %i\n", sizeof(*this));
-
-		#define DO(x)printf(#x ": %i| %i\n", x.is_compressed, x.size)
-
-		DO(time_table);
-		DO(time_stream);
-		DO(composite_key);
-
-
-		if (flags & RRF_FLAG::using_screenspace) {
-			printf("screen_ratio: %f\n", screen_ratio);
-			DO(screen_space_sign_sustain);
-			DO(screen_space[0]);
-			DO(screen_space[1]);
-		}
-		else {
-
-			DO(high_float[0].sign);
-			DO(high_float[0].exponent.absolute_table);
-			DO(high_float[0].exponent.sustain);
-			DO(high_float[0].exponent.stream);
-			DO(high_float[0].mantissa);
-
-			DO(high_float[1].sign);
-			DO(high_float[1].exponent.absolute_table);
-			DO(high_float[1].exponent.sustain);
-			DO(high_float[1].exponent.stream);
-			DO(high_float[1].mantissa);
-
-
-			DO(lowf_sign);
-			DO(lowf_delta);
-		}
-
-		#undef DO
-
-	}
 
 };
 

@@ -12,6 +12,16 @@ void add_to_u8(std::vector<u8>& output, u32 input) {
 	memcpy(output.data() + i, &input, 4);
 }
 
+void add_to_u8(std::vector<u8>& output, const void* src, size_t size) {
+
+	const auto i{ output.size() };
+
+	output.resize(i + size);
+
+	memcpy(output.data() + i, src, size);
+}
+
+
 template<typename T>
 void add_to_u8(std::vector<u8>& output, const std::vector<T>& input) {
 
@@ -49,7 +59,6 @@ u32 unique_get_(u32 v, const std::vector<std::pair<u32, u32>>& b) {
 	return 0;
 };
 
-
 const auto pair_sort = [](const auto& x, const auto& y) {
 	return x.second > y.second;
 };
@@ -67,7 +76,7 @@ namespace comp {
 
 		p.numHashBytes = 3;
 
-		p.lc = 3;
+		p.lc = 2;
 
 		p.pb = 0;
 
@@ -83,9 +92,9 @@ namespace comp {
 		p.level = 5;
 		p.mc = 16;
 
-		p.numHashBytes = 5;
+		p.numHashBytes = 3;
 
-		p.lc = 3;
+		p.lc = 2;
 
 		p.pb = 0;
 
@@ -111,7 +120,7 @@ namespace comp {
 		return p;
 	}
 
-	CLzmaEncProps delta_prop(const size_t size) {
+	CLzmaEncProps time_delta_prop(const size_t size) {
 
 		CLzmaEncProps p;
 		LzmaEncProps_Init(&p);
@@ -129,7 +138,9 @@ namespace comp {
 		return p;
 	}
 
-	CLzmaEncProps pos_delta_prop(const size_t size) {
+	CLzmaEncProps pos_delta_prop(size_t size) {
+
+		size /= 8;
 
 		CLzmaEncProps p;
 		LzmaEncProps_Init(&p);
@@ -140,7 +151,14 @@ namespace comp {
 
 		p.numHashBytes = 4;
 
-		p.lc = (size / 8) >= 10238 ? 4 : 3;
+		p.lc = 2;
+
+		if (size > 65536)
+			p.lc = 5;
+		else if (size > 32768)
+			p.lc = 4;
+		else if (size > 16384)
+			p.lc = 3;
 
 		p.pb = 0;
 
@@ -286,7 +304,7 @@ namespace comp {
 	}
 
 	std::vector<char> compress_conditional(const bit_stream& b, CLzmaEncProps prop, bool& not_compressed) {
-
+		
 		const auto ret = compress(b, prop);
 
 		typedef union _cast {
@@ -332,7 +350,6 @@ struct _exponent_stream {
 	}
 
 	u32 chunk_count;
-	bool sustain_4bits;
 	bit_stream sustain_data;
 	bit_stream abs_table_stream;
 	bit_stream stream;
@@ -470,12 +487,12 @@ struct _exponent_stream {
 
 				last = (int)v;
 
-				abs_table_stream.push_back(delta < 0);
 				write_bucket<3>(abs(delta), abs_table_stream, 2);
+				small_write<1>(delta < 0, abs_table_stream);
 
 			}
 
-			small_write<2>(0, abs_table_stream);
+			write_bucket<3>(0, abs_table_stream, 2);
 
 		}
 
@@ -528,18 +545,12 @@ struct _exponent_stream {
 			}
 		}
 
-		bit_stream sustain_data_4{};
-		bit_stream sustain_data_5{};
-
 		chunk_count = chunk.size();
 
 		for (const auto& c : chunk) {
-			write_bucket(c.sustain, sustain_data_4, 4, 5);
-			write_bucket(c.sustain, sustain_data_5, 5, 6);
-		}
 
-		sustain_4bits = sustain_data_4.size() < sustain_data_5.size();
-		sustain_data = sustain_4bits ? sustain_data_4 : sustain_data_5;
+			write_bucket(c.sustain, sustain_data, GAME_SPACE_EXP_SUSTAIN);
+		}
 
 	}
 
@@ -767,28 +778,75 @@ struct _time_delta_stream {
 
 };
 
-struct _screen_space_stream {
-
-	bit_stream sign_sustain;
-	bit_stream delta;
-
-};
-
 struct _rrf_construct {
 
-	u8 rrf_version;
-	u32 flags;
-	float screen_ratio;
+	u32 rrf_version, flags, frame_count, data_count;
 
-	std::vector<u8> osr_header_bytes;
+	rrf_tag tag_table[256];
+	_rrf_data_block data_table[256];
 
-	u32 frame_count, lowfi_count;
+	std::vector<u8> file_data;
+
+	void add_compress_stream(rrf_tag tag, const bit_stream& data, const CLzmaEncProps& props) {
+
+		if (data_count == 255) [[unlikely]]
+			return;
+
+		ON_SCOPE_EXIT( ++data_count; );
+
+		tag_table[data_count] = tag;
+
+		auto& dt{ data_table[data_count] };
+
+		bool not_compressed{};
+
+		const auto c{ comp::compress_conditional(data, props, not_compressed) };
+
+		if (not_compressed) {
+
+			dt.is_compressed = 0;
+			dt.size = data.data.size();
+
+			add_to_u8(file_data, data.data);
+
+		} else {
+
+			dt.is_compressed = 1;
+			dt.size = c.size();
+
+			add_to_u8(file_data, c);
+		}
+
+	}
+
+	void add_stream(rrf_tag tag, const void* src, size_t size) {
+
+		if (data_count == 255) [[unlikely]]
+			return;
+
+		ON_SCOPE_EXIT( ++data_count; );
+
+		tag_table[data_count] = tag;
+
+		auto& dt{ data_table[data_count] };
+		
+		dt.is_compressed = 0;
+		dt.size = size;
+
+		const auto s{ file_data.size() };
+
+		file_data.resize(s + size);
+		memcpy(file_data.data() + s, src, size);
+
+	}
+
+	void add_stream(rrf_tag tag, const bit_stream& src) {
+		add_stream(tag, src.data.data(), src.data.size());
+	}
+
+	u32 lowfi_count;
 
 	_time_delta_stream time_delta;
-
-	bit_stream key_data;
-
-	_screen_space_stream screen_space[2];
 
 	_low_fidelity_delta_stream lowfi[2];
 
@@ -798,178 +856,133 @@ struct _rrf_construct {
 
 	_mantissa_stream man[2];
 
-	void write(const char* output_file) {
-
-		std::vector<u8> data{};
-
-		data.resize(sizeof(_rrf_header));
-
-		if (flags & RRF_FLAG::has_osr_header) {
-
-			if (osr_header_bytes.size() == 0)
-				add_to_u8(data, 0);
-			else {
-
-				data.resize(data.size() + osr_header_bytes.size());
-				memcpy(data.data() + sizeof(_rrf_header), osr_header_bytes.data(), osr_header_bytes.size());
-
-			}
-
-		}
-
-		_rrf_header header{};
-
-		header.rrf_version = rrf_version;
-		header.flags = flags;
-
-		header.frame_count = frame_count;
+	void write(const char* output_file, const _key_data_constructor& kd) {
 
 		{
-			auto& d{ header.time_table };
 
-			d.is_compressed = 0;
-			d.size = time_delta.table_stream.data.size();
+			bit_stream key_data{};
+			key_data.in_count = 8;
 
-			add_to_u8(data, time_delta.table_stream.data);
+			add_to_u8(key_data.data,				
+				(kd.k1.size() > 1) << 0 |
+				(kd.k2.size() > 1) << 1 |
+				(kd.m1.size() > 1) << 2 |
+				(kd.m2.size() > 1) << 3 |
+				(kd.smoke.size() > 1) << 4
+			);
+
+			#define DO(x) if(kd.x.size() > 1) for (auto& v : kd.x) write_bucket(v, key_data, BUCKET_COMP_KEYS);
+
+			DO(k1);
+			DO(k2);
+			DO(m1);
+			DO(m2);
+			DO(smoke);
+
+			#undef DO
+
+			add_compress_stream(rrf_tag::key_bit_stream, key_data, comp::composite_key_prop());
 
 		}
 
-		const auto write_stream = [&](_data_chunk& dc, const bit_stream& bs, const CLzmaEncProps& prop) {
+		{
 
-			bool comp{};
+			DIAG::OUTPUT_SIZE = 0;
+			puts("");
+			for (size_t i{}; i < data_count; ++i) {
 
-			const auto pack{ comp::compress_conditional(bs, prop, comp) };
+				if (tag_table[i] == rrf_tag::osr_header)
+					continue;
 
-			add_to_u8(data, pack);
-
-			dc.is_compressed = (comp == 0);
-			dc.size = pack.size();
-
-		};
-		
-
-		write_stream(header.time_stream, time_delta.stream, comp::delta_prop(time_delta.stream.size()));
-
-		write_stream(header.composite_key, key_data, comp::composite_key_prop());
-
-		if (flags & RRF_FLAG::using_screenspace) {
-
-			header.screen_ratio = screen_ratio;
-
-			write_stream(header.screen_space[0],
-				screen_space[0].delta,
-				comp::pos_delta_prop(screen_space[0].delta.size())
-			);
-			write_stream(header.screen_space[1],
-				screen_space[1].delta,
-				comp::pos_delta_prop(screen_space[1].delta.size())
-			);
-
-			write_stream(header.screen_space_sign_sustain,
-				combine_bool_vector(screen_space[0].sign_sustain, screen_space[1].sign_sustain),
-				comp::screen_space_sign_sustain()
-			);
-
-
-		}
-		else {
-
-			header.lowfi_count = lowfi_count;
-
-			for (size_t i{}; i < 2; ++i) {
-
-				header.high_float[i].exponent.chunk_count = exp[i].chunk_count;
-				header.high_float[i].exponent.sustain_4bits = exp[i].sustain_4bits;
-
-				{
-
-					auto& d{ header.high_float[i].sign };
-
-					d.is_compressed = 0;
-					d.size = sign[i].size() * sizeof(sign[i][0]);
-
-					add_to_u8(data, sign[i]);
-
-				}
-
-
-				{
-
-					auto& d{ header.high_float[i].exponent.absolute_table };
-
-					d.is_compressed = 0;
-					d.size = exp[i].abs_table_stream.data.size();
-
-					add_to_u8(data, exp[i].abs_table_stream.data);
-
-				}
-
-				write_stream(header.high_float[i].exponent.sustain, exp[i].sustain_data, comp::exp_sustain_prop());
-				write_stream(header.high_float[i].exponent.stream, exp[i].stream, comp::exp_stream_prop());
-
-				{
-
-					auto& d{ header.high_float[i].mantissa };
-
-					const auto& comp{ man[i].get_comp() };
-
-					d.is_compressed = 0;
-					d.size = comp.size();
-
-					add_to_u8(data, comp);
-
-				}
-
+				DIAG::OUTPUT_SIZE += data_table[i].size;
+				printf("%i> %i|%i\n", tag_table[i], data_table[i].is_compressed, data_table[i].size);
 			}
-
-			write_stream(header.lowf_sign,
-				combine_bool_vector(lowfi[0].sign_sustain, lowfi[1].sign_sustain),
-				comp::lowf_sign_prop());
-			{
-
-				header.lowf_delta_y_start_bit = lowfi[0].lowf_value.size();
-
-				const auto& comp{ combine_bool_vector(lowfi[0].lowf_value, lowfi[1].lowf_value) };
-
-				write_stream(header.lowf_delta, comp, comp::lowf_prop(comp.size()));
-
-			}
+			puts("");
 
 		}
 
+		std::vector<u8> final_file{};
 
-		memcpy(data.data(), &header, sizeof(header));
+		final_file.reserve(256 * file_data.size());
 
-		header.print_sizes();
+		final_file.resize(sizeof(_rrf_header));
 
-		DIAG::OUTPUT_SIZE = data.size() - osr_header_bytes.size();
+		auto* h{ (_rrf_header*)final_file.data() };
 
-		write_file(output_file, data);
+		h->version = RRF_VERSION;
+		h->flags = flags;
+		h->frame_count = frame_count;
+		h->data_count = data_count;
+
+		add_to_u8(final_file, tag_table, data_count * sizeof(tag_table[0]));
+		add_to_u8(final_file, data_table, data_count * sizeof(data_table[0]));
+
+		add_to_u8(final_file, file_data);
+
+
+
+		write_file(output_file, final_file);		
 
 	}
 
 };
 
-void encode_delta(const _osr& r, _rrf_construct& rrf) {
+void encode_delta_time(const _osr& r, _rrf_construct& rrf) {
 
-	std::vector<std::pair<u32, u32>> delta_map{}; delta_map.reserve(64);
+	std::vector<int> delta_table{}; delta_table.reserve(64);
 
-	for (const auto& v : r)
-		unique_add(static_cast<u32>(v.delta), delta_map);
+	{
+		std::vector<std::pair<u32, u32>> temp{}; temp.reserve(64);
 
-	std::sort(delta_map.begin(), delta_map.end(), pair_sort);
+		for (const auto& v : r)
+			unique_add(std::bit_cast<u32>(v.delta), temp);
 
-	auto& stream{ rrf.time_delta };
+		std::sort(temp.begin(), temp.end(), pair_sort);
 
-	stream.set_delta_table(delta_map);
+		delta_table.resize(temp.size());
 
-	for (const auto& v : r)
-		write_bucket(stream.get_table_index(v.delta), stream.stream, BUCKET_TIME_STREAM);
+		for (size_t i{}; i < temp.size(); ++i)
+			delta_table[i] = std::bit_cast<int>(temp[i].first);
 
-	small_write<5>(stream.delta_table.size(), stream.table_stream);
+	}
 
-	for (auto v : stream.delta_table)
-		small_write<5>(v, stream.table_stream);
+	bit_stream BS{}; BS.data.reserve(r.size());
+
+	{
+		// Nowhere near optimal, but it's simple and somewhat low impact
+
+		small_write<5>(delta_table.size(), BS);
+
+		for (const auto& v : delta_table)
+			small_write<5>(v < 0 ? -v : v, BS);
+
+		for (const auto& v : delta_table)
+			BS.push_back(v < 0);
+
+		rrf.add_stream(rrf_tag::time_delta_table, BS.data.data(), BS.data.size());
+
+	}
+
+	BS.clear();
+
+	{
+
+		const auto get_index = [&delta_table](const int v) {
+
+			for (u32 i{}; i < delta_table.size(); ++i)
+				if (v == delta_table[i])
+					return i;
+
+			return (u32)0;
+
+		};
+
+		for (const auto& v : r)
+			write_bucket(get_index(v.delta), BS, BUCKET_TIME_STREAM);
+
+		rrf.add_compress_stream(rrf_tag::time_delta_stream, BS, comp::time_delta_prop(BS.size()));
+
+	}
 
 }
 
@@ -1036,82 +1049,98 @@ bool encode_replay_screen_space(const char* output_file, const _osr& r, const u3
 
 	_rrf_construct result{};
 
-	result.frame_count = r.size();
 	result.flags = flags | RRF_FLAG::using_screenspace;
-	result.osr_header_bytes = std::move(osr_header_bytes);
+	result.frame_count = r.size();
 
-	encode_delta(r, result);
+	encode_delta_time(r, result);
+
+	if (osr_header_bytes.size())
+		result.add_stream(rrf_tag::osr_header, osr_header_bytes.data(), osr_header_bytes.size());
+
+	result.add_stream(rrf_tag::screen_space_info, &screen_ratio, 4);
 
 	_key_data_constructor kd{};
 
-	result.screen_ratio = screen_ratio;
-
-	const float game_ratio{ screen_ratio };
-
 	{
 
-		const auto error_quantize = [game_ratio](float x) -> int {
-			return (int)std::round(x * game_ratio);
-		};
+		bit_stream SS_delta[2]{};
+		bit_stream SS_sign_sustain[2]{};
 
 		{
 
-			bool SP_sign[2]{};
-			int SP[2]{};
+			struct _delta_int_stream {
 
-			std::vector<u32> sign[2];
+				u32 sign_count;
+				int prev_value;
+				bool prev_sign;
 
-			sign[0].push_back({});
-			sign[1].push_back({});
+				void finish_sign(bit_stream& sign_stream) {
+
+					write_bucket(sign_count, sign_stream, SCREEN_SPACE_SIGN_SUSTAIN);
+
+					sign_count = 0;
+
+				}
+
+				void push_back(const int v, bit_stream& delta_stream, bit_stream& sign_stream) {
+
+					ON_SCOPE_EXIT(prev_value = v; );
+
+					const int delta{ v - prev_value };
+
+					write_bucket(delta < 0 ? -delta : delta, delta_stream, SCREEN_SPACE_DELTA);
+
+					if (const auto new_sign{ delta < 0 }; delta != 0 && new_sign != prev_sign) {
+
+						write_bucket(sign_count, sign_stream, SCREEN_SPACE_SIGN_SUSTAIN);
+
+						prev_sign = new_sign;
+						sign_count = 0;
+
+					}
+					else
+						++sign_count;
+
+				}
+
+			};
+
+			_delta_int_stream pos_delta_meta[2]{};
 
 			for (auto& f : r) {
 
 				kd.tick(f.keys);
 
-				const int ss_pos[2]{
-					error_quantize(f.x), error_quantize(f.y)
-				};
+				float* O{ (float*)&f.x };
 
 				for (size_t i{}; i < 2; ++i) {
-
-					const int delta{ ss_pos[i] - SP[i] };
-					SP[i] = ss_pos[i];
-
-					if (const auto cs{ (delta < 0) }; delta == 0 || cs == SP_sign[i])
-						++sign[i].back();
-					else {
-						SP_sign[i] = cs;
-						sign[i].push_back(1);
-					}
-
-					write_bucket(abs(delta), result.screen_space[i].delta, SCREEN_SPACE_DELTA);
+					
+					pos_delta_meta[i].push_back((int)std::round(O[i] * screen_ratio),
+						SS_delta[i],
+						SS_sign_sustain[i]
+					);
 
 				}
 
 			}
 
 			for (size_t i{}; i < 2; ++i)
-				for (const auto& s : sign[i]) 
-					write_bucket(s, result.screen_space[i].sign_sustain, SCREEN_SPACE_SIGN_SUSTAIN);
+				pos_delta_meta[i].finish_sign(SS_sign_sustain[i]);
 
 		}
 
-		for (auto& v : kd.k1)
-			write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+		{
 
-		for (auto& v : kd.k2)
-			write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+			const auto& comp{ combine_bool_vector(SS_sign_sustain[0], SS_sign_sustain[1]) };
 
-		for (auto& v : kd.m1)
-			write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+			result.add_compress_stream(rrf_tag::screen_space_sign_sustain, comp, comp::screen_space_sign_sustain());
 
-		for (auto& v : kd.m2)
-			write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+		}
 
-		for (auto& v : kd.smoke)
-			write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+		result.add_compress_stream(rrf_tag::screen_space_x_delta, SS_delta[0], comp::pos_delta_prop(SS_delta[0].size()));
+		result.add_compress_stream(rrf_tag::screen_space_y_delta, SS_delta[1], comp::pos_delta_prop(SS_delta[1].size()));
 
-		result.write(output_file);
+		result.write(output_file, kd);
 
 	}
 
@@ -1128,18 +1157,20 @@ void encode_replay(const char* output_file, const _osr& r, const u32 flags, std:
 	result.frame_count = r.size();
 	result.flags = flags;
 
-	result.osr_header_bytes = std::move(osr_header_bytes);
+	if (osr_header_bytes.size())
+		result.add_stream(rrf_tag::osr_header, osr_header_bytes.data(), osr_header_bytes.size());
 
-	if(osr_header_bytes.size())
-		result.osr_header_bytes = std::move(osr_header_bytes);
-
-	encode_delta(r, result);
+	encode_delta_time(r, result);
 
 	_key_data_constructor kd{};
+
+	//constexpr float lowfi_resolution{ 2.25f }; // 1080p (~1.7% cost)
+	constexpr float lowfi_resolution{ 1.f };
 
 	{
 
 		std::vector<int> lowfi_delta[2];
+
 		std::vector<u8> exp_data[2];
 
 		result.sign[0].push_back({});
@@ -1151,8 +1182,8 @@ void encode_replay(const char* output_file, const _osr& r, const u32 flags, std:
 		for (auto v : r) {
 
 			const int lowfi[2]{
-				(int)::roundf(v.x),
-				(int)::roundf(v.y)
+				(int)::roundf(v.x * lowfi_resolution),
+				(int)::roundf(v.y * lowfi_resolution)
 			};
 
 			ON_SCOPE_EXIT(
@@ -1168,8 +1199,8 @@ void encode_replay(const char* output_file, const _osr& r, const u32 flags, std:
 
 				++result.lowfi_count;
 
-				lowfi_delta[0].push_back(lowfi[0] - P_LOWFI[0]);
-				lowfi_delta[1].push_back(lowfi[1] - P_LOWFI[1]);
+				lowfi_delta[0].push_back(lowfi[0] - P_LOWFI[0] );
+				lowfi_delta[1].push_back(lowfi[1] - P_LOWFI[1] );
 
 				continue;
 			}
@@ -1179,11 +1210,6 @@ void encode_replay(const char* output_file, const _osr& r, const u32 flags, std:
 			for (size_t i{}; i < 2; ++i) {
 
 				exp_data[i].push_back(pos[i].p.exponent);
-
-				//if ((key_pressed || ((flags & RRF_FLAG::exp23_check) > 0)) == 0) {
-				//	pos[i].p.mantissa >>= 7;
-				//	pos[i].p.mantissa <<= 7;
-				//}
 
 				result.man[i].push_back(pos[i].p.mantissa);
 
@@ -1205,22 +1231,65 @@ void encode_replay(const char* output_file, const _osr& r, const u32 flags, std:
 
 	}
 
-	for (auto& v : kd.k1)
-		write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+	{
 
-	for (auto& v : kd.k2)
-		write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+		_game_space_info gsi{};
 
-	for (auto& v : kd.m1)
-		write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+		gsi.exp_sustain_count[0] = result.exp[0].chunk_count;
+		gsi.exp_sustain_count[1] = result.exp[1].chunk_count;
+		gsi.lowfi_count = result.lowfi_count;
+		gsi.lowfi_resolution = lowfi_resolution;
+		gsi.lowf_delta_y_start_bit = result.lowfi[0].lowf_value.size();
 
-	for (auto& v : kd.m2)
-		write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+		result.add_stream(rrf_tag::game_space_info, &gsi, sizeof(gsi));
 
-	for (auto& v : kd.smoke)
-		write_bucket(v, result.key_data, BUCKET_COMP_KEYS);
+	}
 
-	result.write(output_file);
+
+	{
+
+		const auto sign_full{ combine_bool_vector(result.lowfi[0].sign_sustain, result.lowfi[1].sign_sustain) };
+
+		result.add_compress_stream(rrf_tag::game_space_lowf_sign,
+			sign_full, comp::lowf_sign_prop()
+		);
+
+		const auto lowf_full{ combine_bool_vector(result.lowfi[0].lowf_value, result.lowfi[1].lowf_value) };
+
+		result.add_compress_stream(rrf_tag::game_space_lowf_delta,
+			lowf_full, comp::lowf_prop(lowf_full.size())
+		);
+
+	}
+
+	for (size_t i{}; i < 2; ++i) {		
+
+		result.add_stream(rrf_tag(i + size_t(rrf_tag::game_space_float_x_sign)),
+			result.sign[i].data(), result.sign[i].size() * sizeof(result.sign[i][0])
+		);
+
+		result.add_stream(rrf_tag(i + size_t(rrf_tag::game_space_float_x_exponent_absolute_table)),
+			result.exp[i].abs_table_stream
+		);
+
+		result.add_compress_stream(rrf_tag(i + size_t(rrf_tag::game_space_float_x_exponent_sustain)),
+			result.exp[i].sustain_data, comp::exp_sustain_prop()
+		);
+
+		result.add_compress_stream(rrf_tag(i + size_t(rrf_tag::game_space_float_x_exponent_stream)),
+			result.exp[i].stream, comp::exp_stream_prop()
+		);
+
+		const auto& comp{ result.man[i].get_comp() };
+
+		result.add_stream(rrf_tag(i + size_t(rrf_tag::game_space_float_x_mantissa)),
+			comp.data(), comp.size()
+		);
+
+	}
+
+
+	result.write(output_file, kd);
 
 }
 
@@ -1280,12 +1349,7 @@ void osr_to_rrf(const char* in_file, const char* out_file, const u32 flags){
 
 		padv(u64); // time_stamp
 
-		{
-			const auto h_size{ size_t(lzma_start - raw_file.data()) };
-			add_to_u8(header_bytes, h_size);
-			header_bytes.resize(h_size + 4);
-			memcpy(header_bytes.data() + 4, raw_file.data(), h_size);
-		}
+		add_to_u8(header_bytes, raw_file.data(), size_t(lzma_start - raw_file.data()));
 
 		padv(u32); // lzma_size - is this in the raw stream too?
 

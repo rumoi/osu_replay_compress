@@ -1,3 +1,4 @@
+
 #include "rrf_write.h"
 #include "rrf_read.h"
 
@@ -7,6 +8,8 @@ int main(const int param_count, char** param) {
 	
 		puts("rrf.exe {input_path} {output_path}\n");
 	
+		printf("\n Final Compression Ratio: %f\n", float(DIAG::OUTPUT_SIZE) / float(DIAG::INPUT_SIZE));
+
 		return 0;
 	}
 
@@ -23,4 +26,5 @@ int main(const int param_count, char** param) {
 
 	}
 
+	return 1;
 }

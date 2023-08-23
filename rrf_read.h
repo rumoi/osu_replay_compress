@@ -3,6 +3,31 @@
 #include "rrf_shared.h"
 #include <charconv>
 
+struct _stream_map {
+
+	struct _elem {
+		u8 tag;
+		std::vector<u8> data;
+	};
+
+	std::vector<_elem> data;
+
+	const std::vector<u8>& operator[](rrf_tag tag) const {
+
+		for (const auto& v : data) {
+
+			if (v.tag != u8(tag))
+				continue;
+
+			return v.data;
+
+		}
+
+		return {};
+	}
+
+};
+
 namespace rrf {
 
 	void lzma_decomp(std::vector<u8>& ret, const u8* data, size_t size) {
@@ -51,22 +76,14 @@ void extract_exponent_stream(const u32 key_frame_count, floatp* output,
 	const u8* absolute_table,
 	const bit_stream& stream_bit,
 	const bit_stream& sustain_bit,
-	std::vector<u32>& sustain,
-	const bool is_4) {
+	std::vector<u32>& sustain) {
 
 	{
 
 		size_t bit_offset{};
 
-		u32 bc[2]{ 5,6 };
-
-		if (is_4) {
-			bc[0] = 4;
-			bc[1] = 5;
-		}
-
 		for (auto& v : sustain)
-			v = read_bucket(sustain_bit, bit_offset, bc[0], bc[1]);
+			v = read_bucket(sustain_bit, bit_offset, GAME_SPACE_EXP_SUSTAIN);
 
 	}
 
@@ -167,89 +184,111 @@ std::vector<u8> compress_osr_string(std::string_view string) {
 	return output;
 }
 
-void construct_screen_space(const _rrf_header* header, u8*& data, std::vector<_osr_frame>& R) {
+void construct_screen_space(const _rrf_header* header, const _stream_map& stream_data , std::vector<_osr_frame>& R) {
 
 	std::vector<int> delta_table[2];
 	
 	delta_table[0].resize(header->frame_count);
 	delta_table[1].resize(header->frame_count);
-
+	
 	{
-		const auto read_delta_stream = [](const bit_stream stream, std::vector<int>& output) {
-			size_t i{};
 
+		const auto read_delta_stream = [](const bit_stream& stream, std::vector<int>& output) {
+
+			size_t i{};
+	
 			for (auto& v : output)
 				v = read_bucket(stream, i, SCREEN_SPACE_DELTA);
-
+	
 		};
+	
 
-		for (size_t i{}; i < 2; ++i)
-			read_delta_stream(bit_stream{ std::move(rrf::read_chunk(header->screen_space[i], data)) }, delta_table[i]);
+		read_delta_stream(bit_stream{ stream_data[rrf_tag::screen_space_x_delta] }, delta_table[0]);
+		read_delta_stream(bit_stream{ stream_data[rrf_tag::screen_space_y_delta] }, delta_table[1]);
+
 	}
-
+	
 	{
-
-		const bit_stream sign_stream{ bit_stream{rrf::read_chunk(header->screen_space_sign_sustain, data)} };
-
+	
+		const bit_stream sign_stream{ stream_data[rrf_tag::screen_space_sign_sustain] };
+	
 		const auto read_sign_stream = [](const bit_stream& stream, std::vector<int>& output, size_t& i) {
-
-			size_t sign{}, frame{};
-
-			while (frame < output.size()) {
-
-				const auto sustain{ read_bucket(stream, i, SCREEN_SPACE_SIGN_SUSTAIN) };
-
+	
+			size_t sign{};
+			int frame{ -1 };
+	
+			while (frame < int(output.size())) {
+	
+				const auto sustain{ 1 + read_bucket(stream, i, SCREEN_SPACE_SIGN_SUSTAIN) };
+	
 				if (sign) {
-
+	
 					for (size_t z{}; z < sustain; ++z) {
-
+	
 						output[frame] = -output[frame];
 						++frame;
 					}
-
+	
 				} else frame += sustain;
-
+	
 				sign = !sign;
-
+	
 			}
-
+	
 		};
-
+	
 		size_t i{};
 		read_sign_stream(sign_stream, delta_table[0], i);
 		read_sign_stream(sign_stream, delta_table[1], i);
-
+	
 	}
-
+	
 	int PREV[2]{};
+	
+	const auto& d{ stream_data[rrf_tag::screen_space_info] };
+
+	const float screen_ratio{ std::max(d.size() == 4 ? *(float*)d.data() : 1.f, 1.f) };
 
 	//const float RR{ 1.f / header->screen_ratio };
-
+	
 	for (size_t i{}; i < header->frame_count; ++i) {
 		
 		float* O = &R[i].x;
-
+	
 		for (size_t z{}; z < 2; ++z) {
-
+	
 			int v{ PREV[z] + delta_table[z][i] };
 			PREV[z] = v;
-
+	
 			//O[z] = float(v) * RR;
-			O[z] = float(v) / header->screen_ratio;
-
+			O[z] = float(v) / screen_ratio;
+	
 		}
-
+	
 	}
 
 }
 
-void construct_game_space(const _rrf_header* header, u8*& data, std::vector<_osr_frame>& R) {
+void construct_game_space(const _rrf_header* header, const _stream_map& stream_data, std::vector<_osr_frame>& R) {
 
-	std::vector<floatp> float_table;
+	_game_space_info gsi{};
+
+	{
+
+		const auto& d{ stream_data[rrf_tag::game_space_info] };
+
+		if (d.size() != sizeof(gsi))
+			return;
+
+		memcpy(&gsi, d.data(), sizeof(gsi));
+
+	}
+
+	std::vector<floatp> float_table{};
 	// Construct float table
 	{
 
-		const auto key_frame_count{ header->frame_count - header->lowfi_count };
+		const auto key_frame_count{ header->frame_count - gsi.lowfi_count };
 
 		float_table.resize(2 * key_frame_count);
 
@@ -260,7 +299,7 @@ void construct_game_space(const _rrf_header* header, u8*& data, std::vector<_osr
 			// Sign
 			{
 
-				const auto& raw{ rrf::read_chunk(header->high_float[fc].sign, data) };
+				const auto& raw{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_sign) + fc)] };
 
 				const auto count{ raw.size() / 4 };
 
@@ -291,7 +330,8 @@ void construct_game_space(const _rrf_header* header, u8*& data, std::vector<_osr
 				u8 absolute_table[256];
 
 				{
-					bit_stream table_stream{ std::move(rrf::read_chunk(header->high_float[fc].exponent.absolute_table, data)) };
+
+					bit_stream table_stream{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_absolute_table) + fc)] };
 
 					u8* v{ absolute_table };
 
@@ -301,33 +341,34 @@ void construct_game_space(const _rrf_header* header, u8*& data, std::vector<_osr
 
 					for (;;) {
 
-						const auto is_negative{ table_stream[i++] };
 
-						const auto delta{ read_bucket<3>(table_stream, i, 2) };
+						auto delta{ (int)read_bucket<3>(table_stream, i, 2) };
 
 						if (delta == 0)
 							break;
 
+						delta = small_read<1>(table_stream, i) ? -delta : delta;
+
 						const auto prev{ *(v - 1) };
 
-						*(v++) = is_negative ? (prev - delta) : (prev + delta);
+						*(v++) = (prev + delta);
 
 
 					}
 
 				}
-
-				sustain_buffer.resize(header->high_float[fc].exponent.chunk_count);
+				
+				sustain_buffer.resize(gsi.exp_sustain_count[fc]);
 
 				bit_stream sustain_bit{}, stream_bit{};
 
-				sustain_bit.data = std::move(rrf::read_chunk(header->high_float[fc].exponent.sustain, data));
-				stream_bit.data = std::move(rrf::read_chunk(header->high_float[fc].exponent.stream, data));
+				sustain_bit.data = stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_sustain) + fc)];
+				stream_bit.data = stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_stream) + fc)];
 
 
 				extract_exponent_stream(key_frame_count, float_table.data() + fc,
 					absolute_table, stream_bit, sustain_bit,
-					sustain_buffer, header->high_float[fc].exponent.sustain_4bits
+					sustain_buffer
 				);
 
 			}
@@ -335,7 +376,7 @@ void construct_game_space(const _rrf_header* header, u8*& data, std::vector<_osr
 			// Mantissa
 			{
 
-				const auto mantissa_buffer{ rrf::read_chunk(header->high_float[fc].mantissa, data) };
+				const auto mantissa_buffer{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_mantissa) + fc)] };
 
 				floatp* o{ float_table.data() + fc };
 				const u8* d{ mantissa_buffer.data() };
@@ -404,18 +445,16 @@ void construct_game_space(const _rrf_header* header, u8*& data, std::vector<_osr
 	// Set up lowf sign table
 	{
 
-		bit_stream lowf_sign_stream{};
-
-		lowf_sign_stream.data = std::move(rrf::read_chunk(header->lowf_sign, data));
+		bit_stream lowf_sign_stream{ stream_data[rrf_tag::game_space_lowf_sign] };
 
 		const auto MAX_BIT{ lowf_sign_stream.size() };
 
 		for (size_t i{}, bit_offset{}; i < 2; ++i) {
 
-			lowf_sign[i].resize(header->lowfi_count);
+			lowf_sign[i].resize(gsi.lowfi_count);
 
 			int COUNT{ -1 };
-			for (bool flag{}; COUNT < (int)header->lowfi_count && bit_offset < MAX_BIT; ) {
+			for (bool flag{}; COUNT < (int)gsi.lowfi_count && bit_offset < MAX_BIT; ) {
 
 				const auto sustain = 1 + read_bucket(lowf_sign_stream, bit_offset, 4, 4, 4, 8);
 
@@ -433,11 +472,11 @@ void construct_game_space(const _rrf_header* header, u8*& data, std::vector<_osr
 
 	// Now we can start reconstructing the full stream.
 
-	size_t lowfi_x_index{}, lowfi_y_index{ header->lowf_delta_y_start_bit };
+	size_t lowfi_x_index{}, lowfi_y_index{ gsi.lowf_delta_y_start_bit };
 
-	bit_stream lowf_delta_stream{};
+	bit_stream lowf_delta_stream{ stream_data[rrf_tag::game_space_lowf_delta] };
 
-	lowf_delta_stream.data = std::move(rrf::read_chunk(header->lowf_delta,data));
+	const float lowf_r{ 1.f / gsi.lowfi_resolution };
 
 	int R_X{}, R_Y{};
 
@@ -453,8 +492,8 @@ void construct_game_space(const _rrf_header* header, u8*& data, std::vector<_osr
 			R[i].y = float_table[h_i + 1].f;
 
 			// A lot of useless rounds
-			R_X = (int)::roundf(R[i].x);
-			R_Y = (int)::roundf(R[i].y);
+			R_X = (int)::roundf(R[i].x * gsi.lowfi_resolution);
+			R_Y = (int)::roundf(R[i].y * gsi.lowfi_resolution);
 
 		}
 		else {
@@ -465,151 +504,172 @@ void construct_game_space(const _rrf_header* header, u8*& data, std::vector<_osr
 			_x = lowf_sign[0][lowf_i] ? -_x : _x;
 			_y = lowf_sign[1][lowf_i] ? -_y : _y;
 
-			R[i].x = (float)(R_X += _x);
-			R[i].y = (float)(R_Y += _y);
+			R[i].x = float(R_X += _x) * lowf_r;
+			R[i].y = float(R_Y += _y) * lowf_r;
 
 			++lowf_i;
-
 
 		}
 
 	}
-
 
 }
 
 bool rrf_to_osr(const char* input_file, const char* output_file) {
 
+
 	const auto& raw_bytes{ read_file(input_file) };
 
-	const _rrf_header* header{ (const _rrf_header*)raw_bytes.data() };
 
-	u8* data{ (u8*)raw_bytes.data() + sizeof(_rrf_header) };
-	
-	std::vector<_osr_frame> R; R.resize(header->frame_count);
+	const _rrf_header*const header{ (const _rrf_header*)raw_bytes.data() };
 
-	std::vector<u8> final_file_output;
+	_stream_map stream_data{};
+	stream_data.data.resize(header->data_count);
 
-	if (header->flags & RRF_FLAG::has_osr_header) {
+	{
 
-		final_file_output.resize(*(u32*)data);
+		const u8* const tags{ raw_bytes.data() + sizeof(_rrf_header) };
+		const _rrf_data_block* const data_block{ (_rrf_data_block*)(tags + header->data_count) };
 
-		memcpy(final_file_output.data(), data + 4, final_file_output.size());
+		u8* data_ptr{ (u8*)(data_block + header->data_count) };
 
-		data += 4 + final_file_output.size();
+		for (size_t i{}, size{ header->data_count }; i < size; ++i) {
+						
+			auto& o{ stream_data.data[i] };
+			const auto& db{ data_block[i] };
 
-	}
+			o.tag = tags[i];
 
-	// Delta
-	{ 
+			if (db.is_compressed == 0)
+				add_to_u8(o.data, data_ptr, db.size);
+			else
+				rrf::lzma_decomp(o.data, data_ptr, db.size);
 
-		std::vector<int> delta_table{};
-
-		{
-			size_t bit_offset{};
-			bit_stream bs{ std::move(rrf::read_chunk(header->time_table, data)) };
-
-			delta_table.resize(small_read<5>(bs, bit_offset));
-
-			for (auto& v : delta_table)
-				v = std::bit_cast<int>(small_read<5>(bs, bit_offset));
+			data_ptr += db.size;
 
 		}
 
-		size_t bit_offset{};
-		bit_stream bs{};
+	}
 
-		bs.data = std::move(rrf::read_chunk(header->time_stream, data));
+	std::vector<_osr_frame> R; R.resize(header->frame_count);
 
-		for (auto& v : R)
-			v.delta = delta_table[read_bucket(bs, bit_offset, BUCKET_TIME_STREAM)];
+	// Delta Time
+	{ 
+	
+		std::vector<int> delta_table{};
+	
+		{
+			size_t bit_offset{};
 
+			bit_stream bs{ stream_data[rrf_tag::time_delta_table] };
+
+			delta_table.resize(small_read<5>(bs, bit_offset));
+	
+			for (auto& v : delta_table) v = small_read<5>(bs, bit_offset);
+			for (auto& v : delta_table) v = small_read<1>(bs, bit_offset) ? -v : v;
+	
+		}
+
+		{
+			size_t bit_offset{};
+			bit_stream bs{ stream_data[rrf_tag::time_delta_stream] };
+			
+			for (auto& v : R)
+				v.delta = delta_table[read_bucket(bs, bit_offset, BUCKET_TIME_STREAM)];
+		}
+	
 	}
 
 	// Keys
 	{
-		size_t bit_offset{};
+		size_t bit_offset{32};
+	
+		bit_stream bs{ stream_data[rrf_tag::key_bit_stream] };
 
-		bit_stream bs{ std::move(rrf::read_chunk(header->composite_key, data)) };
+		const u32 flags{ bs.size() >= 4 ? *(u32*)bs.data.data() : 0 };
 
 		const auto read_key = [&](u32 flag_bits) {
-
+	
 			int COUNT{ -1 };
 			for (bool flag{}; COUNT < (int)header->frame_count && bit_offset < bs.size(); ) {
-
+	
 				const auto sustain{
 					1 + read_bucket(bs, bit_offset, BUCKET_COMP_KEYS)
 				};
-
+	
 				if (flag) {
 					for (size_t i{}; i < sustain; ++i)
 						R[COUNT + i].keys |= flag_bits;
 				}
-
+	
 				COUNT += sustain;
 				flag = !flag;
 			}
-
+	
 		};
 
-		read_key(1 | 4);
-		read_key(2 | 8);
-		read_key(1);
-		read_key(2);
-		read_key(16);
+		if(flags & (1 << 0)) read_key(1 | 4);
+		if(flags & (1 << 1)) read_key(2 | 8);
+		if(flags & (1 << 2)) read_key(1);
+		if(flags & (1 << 3)) read_key(2);
+		if(flags & (1 << 4)) read_key(16);
 
 	}
-
-
-	((header->flags & RRF_FLAG::using_screenspace) ? construct_screen_space : construct_game_space)(header, data, R);
-		
-
+	
+	((header->flags & RRF_FLAG::using_screenspace) ? construct_screen_space : construct_game_space)(header, stream_data, R);
+	
 	{
 
 		size_t i{};
 		std::string OUTPUT; OUTPUT.resize(4096);
-
+	
 		for (auto r : R) {
-
+	
 			constexpr auto M_C{ 25 * 4 };
-
+	
 			if ((OUTPUT.size() - i) < M_C)
 				OUTPUT.resize(OUTPUT.size() + 4096);
-
+	
 			i = std::to_chars(OUTPUT.data() + i, OUTPUT.data() + OUTPUT.size(), r.delta).ptr - OUTPUT.data();
 			OUTPUT[i++] = '|';
-
+	
 			i = std::to_chars(OUTPUT.data() + i, OUTPUT.data() + OUTPUT.size(), r.x).ptr - OUTPUT.data();
 			OUTPUT[i++] = '|';
-
+	
 			i = std::to_chars(OUTPUT.data() + i, OUTPUT.data() + OUTPUT.size(), r.y).ptr - OUTPUT.data();
 			OUTPUT[i++] = '|';
-
+	
 			i = std::to_chars(OUTPUT.data() + i, OUTPUT.data() + OUTPUT.size(), r.keys).ptr - OUTPUT.data();
 			OUTPUT[i++] = ',';
-
+	
 		}
-
+	
 		OUTPUT.resize(std::max(i, (size_t)1) - 1);
-
+	
 		{
 			OUTPUT += ",-12345|0|0|0";
 		}
-
+	
 		const auto& compressed_string{ compress_osr_string(OUTPUT) };
+	
+		std::vector<u8> final_file_output{};
 
-		if (header->flags & RRF_FLAG::has_osr_header)
+		if (header->flags & RRF_FLAG::has_osr_header) {
+
+			add_to_u8(final_file_output, stream_data[rrf_tag::osr_header]);
+
 			add_to_u8(final_file_output, compressed_string.size());
+		}
 		
 		add_to_u8(final_file_output, compressed_string);
-
+	
 		if (header->flags & RRF_FLAG::has_osr_header) {
 			add_to_u8(final_file_output, 0);// score id
 			add_to_u8(final_file_output, 0);
 		}
-
+	
 		write_file(output_file, final_file_output);
-
+	
 	}
 
 	return 1;

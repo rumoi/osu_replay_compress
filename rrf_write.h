@@ -83,7 +83,9 @@ namespace comp {
 		return p;
 	}
 
-	CLzmaEncProps screen_space_sign_sustain() {
+	CLzmaEncProps screen_space_sign_sustain(u32 size) {
+
+		size /= 8;
 
 		CLzmaEncProps p;
 		LzmaEncProps_Init(&p);
@@ -94,7 +96,11 @@ namespace comp {
 
 		p.numHashBytes = 3;
 
-		p.lc = 2;
+		p.lc = 1;
+
+		if (size > 12288) {
+			p.lc = 2;
+		}
 
 		p.pb = 0;
 
@@ -145,13 +151,14 @@ namespace comp {
 		CLzmaEncProps p;
 		LzmaEncProps_Init(&p);
 
-		p.fb = 32;
 		p.level = 5;
-		p.mc = 8;
+
+		p.fb = 32;
+		p.mc = 16;
 
 		p.numHashBytes = 4;
 
-		p.lc = 2;
+		p.lc = 1;
 
 		if (size > 65536)
 			p.lc = 5;
@@ -159,42 +166,31 @@ namespace comp {
 			p.lc = 4;
 		else if (size > 16384)
 			p.lc = 3;
+		else if (size > 4096)
+			p.lc = 2;
 
 		p.pb = 0;
 
 		return p;
 	}
 
+	CLzmaEncProps composite_key_prop(size_t size) {
 
-	CLzmaEncProps key_data_prop() {
-
-		CLzmaEncProps p;
-		LzmaEncProps_Init(&p);
-
-		p.fb = 32;
-		p.level = 5;
-		p.mc = 32;
-		p.numHashBytes = 4;
-		p.btMode = 1;
-
-		p.lc = 3;
-
-		p.pb = 0;
-
-		return p;
-	}
-
-	CLzmaEncProps composite_key_prop() {
+		size /= 8;
 
 		CLzmaEncProps p;
 		LzmaEncProps_Init(&p);
 
-		p.fb = 32;
 		p.level = 5;
+
+		p.fb = 32;
 		p.mc = 16;
 
-		p.numHashBytes = 2;
+		p.numHashBytes = 4;
+
 		p.lc = 2;
+		if (size <= 12288)
+			p.lc = 1;
 
 		p.pb = 0;
 
@@ -208,28 +204,45 @@ namespace comp {
 		CLzmaEncProps p;
 		LzmaEncProps_Init(&p);
 
-		p.fb = 32;
 		p.level = 5;
-		p.mc = 16;
-		p.numHashBytes = 2;
 
-		p.lc = size >= 20476 ? 4 : 3;
+		p.fb = 32;
+		p.mc = 16;
+
+		p.numHashBytes = 3;
+
+
+		if (size >= 32768 * 2)
+			p.lc = 3;
+
+		p.lc = 2;
+		if (size <= 12288)
+			p.lc = 1;
 
 		p.pb = 0;
 
 		return p;
 	}
 
-	CLzmaEncProps lowf_sign_prop() {
+	CLzmaEncProps lowf_sign_prop(size_t size) {
+
+		size /= 8;
 
 		CLzmaEncProps p;
 		LzmaEncProps_Init(&p);
 
-		p.fb = 32;
 		p.level = 5;
+
+		p.fb = 16;
 		p.mc = 16;
 
-		p.lc = 3;
+		p.lc = 2;
+
+		if (size >= 32768 * 2)
+			p.lc = 3;
+
+		if (size <= 12288)
+			p.lc = 1;
 
 		p.pb = 0;
 
@@ -242,9 +255,9 @@ namespace comp {
 		LzmaEncProps_Init(&p);
 
 		p.fb = 32;
-		p.level = 6;
-		p.mc = 16;
-		p.numHashBytes = 4;
+		p.level = 5;
+		p.mc = 32;
+		p.numHashBytes = 3;
 
 		p.lc = 4;
 
@@ -259,12 +272,14 @@ namespace comp {
 		CLzmaEncProps p;
 		LzmaEncProps_Init(&p);
 		
-		p.fb = 32;
 		p.level = 5;
-		p.mc = 16;
+
+		p.fb = 32;
+		p.mc = 32;
 		p.numHashBytes = 2;
 		
 		p.lc = 4;
+		//p.lp = 1; // Saves ~0.067% but with a huge perf cost
 		
 		p.pb = 1;//2 byte alignment
 
@@ -670,53 +685,40 @@ struct _key_data_constructor {
 
 	u32 previous;
 
-	std::vector<u32> m1;
-	std::vector<u32> m2;
-	std::vector<u32> k1;
-	std::vector<u32> k2;
-
-	std::vector<u32> smoke;
+	std::array<std::vector<u32>, 32> key_sustain;
 
 	_key_data_constructor() {
 		previous = 0;
-		k1.push_back(0);
-		k2.push_back(0);
-		m1.push_back(0);
-		m2.push_back(0);
-		smoke.push_back(0);
+
+		for (auto& k : key_sustain)
+			k.push_back(0);
+
 	}
 
-	bool tick(u32 keys) {
+	bool tick(const u32 keys) {
+
+		const u32 delta{ keys ^ previous };
+
+		previous = keys;
+
+		for (size_t i{}; i < key_sustain.size(); ++i) {
+
+			if ((delta >> i) & 1)
+				key_sustain[i].push_back(0);
+			else ++key_sustain[i].back();
+
+		}
+
+		return (keys & delta) > 0;
+	}
+
+	bool tick_std(u32 keys) {
 
 		if (keys & 4) keys &= ~u32(1);
 		if (keys & 8) keys &= ~u32(2);
 
-		const u32 delta{ keys ^ previous };
-		previous = keys;
+		return tick(keys);
 
-		if (delta & 1)
-			m1.push_back(0);
-		else ++m1.back();
-
-		if (delta & 2)
-			m2.push_back(0);
-		else
-			++m2.back();
-
-		if (delta & 4)
-			k1.push_back(0);
-		else ++k1.back();
-
-		if (delta & 8)
-			k2.push_back(0);
-		else ++k2.back();
-
-		if (delta & 16)
-			smoke.push_back(0);
-		else
-			++smoke.back();
-
-		return ((keys & 15) & delta) > 0;
 	}
 
 };
@@ -863,41 +865,40 @@ struct _rrf_construct {
 			bit_stream key_data{};
 			key_data.in_count = 8;
 
-			add_to_u8(key_data.data,				
-				(kd.k1.size() > 1) << 0 |
-				(kd.k2.size() > 1) << 1 |
-				(kd.m1.size() > 1) << 2 |
-				(kd.m2.size() > 1) << 3 |
-				(kd.smoke.size() > 1) << 4
-			);
+			u32 active_flags{};
 
-			#define DO(x) if(kd.x.size() > 1) for (auto& v : kd.x) write_bucket(v, key_data, BUCKET_COMP_KEYS);
+			for (size_t i{}; i < kd.key_sustain.size(); ++i)
+				active_flags |= (kd.key_sustain[i].size() > 1) << i;
 
-			DO(k1);
-			DO(k2);
-			DO(m1);
-			DO(m2);
-			DO(smoke);
+			add_to_u8(key_data.data, active_flags);
 
-			#undef DO
+			for (const auto& ks : kd.key_sustain) {
 
-			add_compress_stream(rrf_tag::key_bit_stream, key_data, comp::composite_key_prop());
+				if (ks.size() <= 1)
+					continue;
+
+				for (const auto& v : ks)
+					write_bucket(v, key_data, BUCKET_COMP_KEYS);
+
+			}
+
+			add_compress_stream(rrf_tag::key_bit_stream, key_data, comp::composite_key_prop(key_data.size()));
 
 		}
 
 		{
 
 			DIAG::OUTPUT_SIZE = 0;
-			puts("");
+			//puts("");
 			for (size_t i{}; i < data_count; ++i) {
 
 				if (tag_table[i] == rrf_tag::osr_header)
 					continue;
 
 				DIAG::OUTPUT_SIZE += data_table[i].size;
-				printf("%i> %i|%i\n", tag_table[i], data_table[i].is_compressed, data_table[i].size);
+				//printf("%i> %i|%i\n", tag_table[i], data_table[i].is_compressed, data_table[i].size);
 			}
-			puts("");
+			//puts("");
 
 		}
 
@@ -919,9 +920,10 @@ struct _rrf_construct {
 
 		add_to_u8(final_file, file_data);
 
+		DIAG::using_screen = (flags & RRF_FLAG::using_screenspace) != 0;
+		DIAG::OUTPUT_SIZE = final_file.size();
 
-
-		write_file(output_file, final_file);		
+		write_file(T.c_str(), final_file);		
 
 	}
 
@@ -977,8 +979,9 @@ void encode_delta_time(const _osr& r, _rrf_construct& rrf) {
 
 		};
 
-		for (const auto& v : r)
+		for (const auto& v : r) {
 			write_bucket(get_index(v.delta), BS, BUCKET_TIME_STREAM);
+		}
 
 		rrf.add_compress_stream(rrf_tag::time_delta_stream, BS, comp::time_delta_prop(BS.size()));
 
@@ -1109,7 +1112,7 @@ bool encode_replay_screen_space(const char* output_file, const _osr& r, const u3
 
 			for (auto& f : r) {
 
-				kd.tick(f.keys);
+				kd.tick_std(f.keys);
 
 				float* O{ (float*)&f.x };
 
@@ -1132,8 +1135,8 @@ bool encode_replay_screen_space(const char* output_file, const _osr& r, const u3
 		{
 
 			const auto& comp{ combine_bool_vector(SS_sign_sustain[0], SS_sign_sustain[1]) };
-
-			result.add_compress_stream(rrf_tag::screen_space_sign_sustain, comp, comp::screen_space_sign_sustain());
+			
+			result.add_compress_stream(rrf_tag::screen_space_sign_sustain, comp, comp::screen_space_sign_sustain(comp.size()));
 
 		}
 
@@ -1148,8 +1151,77 @@ bool encode_replay_screen_space(const char* output_file, const _osr& r, const u3
 
 }
 
-void encode_replay(const char* output_file, const _osr& r, const u32 flags, std::vector<u8> osr_header_bytes = std::vector<u8>{}) {
+void encode_taiko_mania(const char* output_file, const _osr& r, const u32 flags, std::vector<u8> osr_header_bytes = std::vector<u8>{}) {
 
+	_rrf_construct result{};
+
+	result.flags = flags;
+	result.frame_count = r.size();
+
+	encode_delta_time(r, result);
+
+	_key_data_constructor kd{};
+
+	for (auto& f : r)
+		kd.tick(f.keys);
+
+	result.write(output_file, kd);
+
+}
+
+void encode_fruits(const char* output_file, const _osr& r, const u32 flags, std::vector<u8> osr_header_bytes = std::vector<u8>{}) {
+
+	// TODO: Do this for real
+
+	_rrf_construct result{};
+	result.frame_count = r.size();
+	result.flags = flags;
+
+	if (osr_header_bytes.size())
+		result.add_stream(rrf_tag::osr_header, osr_header_bytes.data(), osr_header_bytes.size());
+
+	encode_delta_time(r, result);
+
+	bit_stream BS{};
+
+	floatp last{};
+	
+	for (auto f : r) {
+
+		floatp c{ f.x };
+
+		add_to_u8(BS.data, *(u32*)&c);
+
+		last = c;
+
+	}
+
+	result.add_compress_stream(rrf_tag::fruits_x_data, BS, comp::man_16_prop());
+
+	result.write(output_file, {});
+
+}
+
+void encode_replay(const char* output_file, _osr& r, const u32 flags, std::vector<u8> osr_header_bytes = std::vector<u8>{}) {
+
+	if (flags & (RRF_FLAG::gamemode_taiko | RRF_FLAG::gamemode_mania)) {
+
+		if (flags & RRF_FLAG::gamemode_mania) {
+
+			// TODO: Missing scroll speed.
+
+			for (auto& f : r)
+				f.keys = int(f.x);
+
+		}
+
+		return encode_taiko_mania(output_file, r, flags, osr_header_bytes);
+	}
+
+	if (flags & RRF_FLAG::gamemode_fruits) {
+		return encode_fruits(output_file, r, flags, osr_header_bytes);
+	}
+	
 	if (encode_replay_screen_space(output_file, r, flags, osr_header_bytes))
 		return;
 
@@ -1191,7 +1263,7 @@ void encode_replay(const char* output_file, const _osr& r, const u32 flags, std:
 				P_LOWFI[1] = lowfi[1];
 			);
 
-			const auto key_pressed{ kd.tick(v.keys) };
+			const auto key_pressed{ kd.tick_std(v.keys) };
 
 			const bool is_key{ (flags & RRF_FLAG::force_lossless) ||(v.keys != 0) };
 
@@ -1251,7 +1323,7 @@ void encode_replay(const char* output_file, const _osr& r, const u32 flags, std:
 		const auto sign_full{ combine_bool_vector(result.lowfi[0].sign_sustain, result.lowfi[1].sign_sustain) };
 
 		result.add_compress_stream(rrf_tag::game_space_lowf_sign,
-			sign_full, comp::lowf_sign_prop()
+			sign_full, comp::lowf_sign_prop(sign_full.size())
 		);
 
 		const auto lowf_full{ combine_bool_vector(result.lowfi[0].lowf_value, result.lowfi[1].lowf_value) };
@@ -1287,7 +1359,6 @@ void encode_replay(const char* output_file, const _osr& r, const u32 flags, std:
 		);
 
 	}
-
 
 	result.write(output_file, kd);
 

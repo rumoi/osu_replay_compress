@@ -30,7 +30,7 @@
 #define BUCKET_TIME_STREAM 4,4,4,4
 
 namespace DIAG {
-
+	bool using_screen{};
 	size_t INPUT_SIZE{}, OUTPUT_SIZE{};
 
 }
@@ -346,7 +346,11 @@ enum RRF_FLAG {
 	force_lossless = 1 << 1, // Only affects raw input replays
 	keep_life_bar = 1 << 2,
 
-	using_screenspace = 1 << 3,
+	gamemode_taiko = 1 << 3,
+	gamemode_fruits = 1 << 4,
+	gamemode_mania = 1 << 5,
+
+	using_screenspace = 1 << 6,
 
 };
 
@@ -382,6 +386,9 @@ enum class rrf_tag : u8 {
 
 	game_space_float_x_mantissa,
 	game_space_float_y_mantissa,
+
+	mania_scroll_data,
+	fruits_x_data,
 
 	osr_header,
 	life_bar,

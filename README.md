@@ -1,33 +1,38 @@
 # The Deets
 
-![](https://cdn.discordapp.com/attachments/370454293192507396/1144287993260146748/image.png)
+![](https://cdn.discordapp.com/attachments/370454293192507396/1144730647441707058/image.png)
 
 Replay set: https://drive.google.com/file/d/1i2oe929loEzhvCfRYG-DeZZQ_YouaBYD/view
 
 # osu!game_space
-64.45% avg
+61.147% avg
 
-146.879 MB -> 94.658 MB
+146869397 -> 89806613
 
 # osu!screen_space
-41.69% avg
+41.688% avg
 
-79.733 MB -> 33.240 MB
+79733067 -> 33239538
 
 # taiko
-68.72% avg
+68.697% avg
 
-2.794 MB -> 1.920 MB
+2794427 -> 1919694
 
 # mania
-63.31% avg
+63.288% avg
 
-14.574 MB -> 9.227 MB
+14573725 -> 9223532
+
+# fruit
+67.710% avg
+
+10419674 -> 7055162
 
 # Total
-56.99% of the original size
+55.522771329% of the original size
 
-243.970616 MB -> 139.04455 MB
+254.39029 MB -> 141.244539 MB
 
 Game space (Raw input enabled replays) is lossless for every single frame where any key is being held, for the frames with no key inputs the x/y coordinates are quantised to a lower resolution - an imperceptible change but it can easily be removed.
 

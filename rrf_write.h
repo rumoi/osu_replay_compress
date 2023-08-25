@@ -373,7 +373,8 @@ struct _exponent_stream {
 
 		stream.push_back(1);
 
-		small_write<3>(index, stream);
+		//small_write<3>(index, stream);
+		write_bucket<3>(index, stream, 3);
 
 	}
 
@@ -511,9 +512,11 @@ struct _exponent_stream {
 
 		}
 
-		small_write<3>(get_absolute_index(input[0]), stream);
+		//small_write<3>(get_absolute_index(input[0]), stream);
+		write_bucket<3>(get_absolute_index(input[0]), stream, 3);
 
 		{
+
 			int last{ (int)input[0] };
 
 			bool IMPL_SIGN{};
@@ -584,21 +587,28 @@ struct _mantissa_stream {
 
 	bit_stream stream[2];
 
-	u8 last{};
+	u16 last16;
+	u8 last8;
 
-	void push_back(const u32 V) {
+	void push_back(u32 V) {
+
+		u16 c16{ u16(V) };
+		u8 c8{ u8(V >> 16) };
+
+		u16 d16{ c16 };
+		u8 d8{ c8};
+		
+		d16 -= last16;
+		d8 -= last8;
+
+		last16 = c16;
+		last8 = c8;
 
 		for (size_t i{ 0 }; i < 16; ++i)
-			stream[0].push_back((V >> i) & 1);
-
-		u8 S{ u8(V >> 16) };
-
-		S -= last;
-
-		last = u8(V >> 16);
+			stream[0].push_back((d16 >> i) & 1);
 
 		for (size_t i{ 0 }; i < 8; ++i)
-			stream[1].push_back((S >> i) & 1);
+			stream[1].push_back((d8 >> i) & 1);
 
 	}
 
@@ -666,7 +676,7 @@ struct _low_fidelity_delta_stream {
 		}
 
 		for (auto& v : sign_change)
-			write_bucket(v, sign_sustain, 4, 4, 4, 8);
+			write_bucket(v, sign_sustain, GAME_SPACE_LOWFI_SIGN_SUSTAIN);
 
 	}
 
@@ -675,7 +685,7 @@ struct _low_fidelity_delta_stream {
 		calculate_sign_stream(input);
 
 		for (auto& v : input)
-			write_bucket(abs(v), lowf_value, 4, 4, 4, 8);
+			write_bucket(abs(v), lowf_value, GAME_SPACE_LOWFI_SIGN_SUSTAIN);
 
 	}
 
@@ -791,7 +801,7 @@ struct _rrf_construct {
 
 	void add_compress_stream(rrf_tag tag, const bit_stream& data, const CLzmaEncProps& props) {
 
-		if (data_count == 255) [[unlikely]]
+		if (data_count == 255 || data.size() == 0) [[unlikely]]
 			return;
 
 		ON_SCOPE_EXIT( ++data_count; );
@@ -823,7 +833,7 @@ struct _rrf_construct {
 
 	void add_stream(rrf_tag tag, const void* src, size_t size) {
 
-		if (data_count == 255) [[unlikely]]
+		if (data_count == 255 || size == 0) [[unlikely]]
 			return;
 
 		ON_SCOPE_EXIT( ++data_count; );
@@ -923,7 +933,8 @@ struct _rrf_construct {
 		DIAG::using_screen = (flags & RRF_FLAG::using_screenspace) != 0;
 		DIAG::OUTPUT_SIZE = final_file.size();
 
-		write_file(T.c_str(), final_file);		
+		if(strlen(output_file))
+			write_file(output_file, final_file);
 
 	}
 
@@ -978,7 +989,7 @@ void encode_delta_time(const _osr& r, _rrf_construct& rrf) {
 			return (u32)0;
 
 		};
-
+		
 		for (const auto& v : r) {
 			write_bucket(get_index(v.delta), BS, BUCKET_TIME_STREAM);
 		}
@@ -1155,12 +1166,39 @@ void encode_taiko_mania(const char* output_file, const _osr& r, const u32 flags,
 
 	_rrf_construct result{};
 
+	if (osr_header_bytes.size())
+		result.add_stream(rrf_tag::osr_header, osr_header_bytes.data(), osr_header_bytes.size());
+
 	result.flags = flags;
 	result.frame_count = r.size();
 
 	encode_delta_time(r, result);
 
 	_key_data_constructor kd{};
+
+	if (flags & RRF_FLAG::gamemode_mania) {
+
+		struct _p {
+			u32 start;
+			float v;
+		};
+
+		std::vector<_p> scroll{}; scroll.reserve(32);
+
+		scroll.push_back({2,  r[2].y });
+
+		for (size_t i{ 3 }; i < r.size(); ++i) {
+
+			if (scroll.back().v == r[i].y)
+				continue;
+			
+			scroll.push_back({i, r[i].y});
+
+		}
+
+		result.add_stream(rrf_tag::mania_scroll_data, ((u8*)scroll.data()) + 4, (scroll.size() * sizeof(scroll[0])) - 4);
+
+	}
 
 	for (auto& f : r)
 		kd.tick(f.keys);
@@ -1171,8 +1209,6 @@ void encode_taiko_mania(const char* output_file, const _osr& r, const u32 flags,
 
 void encode_fruits(const char* output_file, const _osr& r, const u32 flags, std::vector<u8> osr_header_bytes = std::vector<u8>{}) {
 
-	// TODO: Do this for real
-
 	_rrf_construct result{};
 	result.frame_count = r.size();
 	result.flags = flags;
@@ -1182,23 +1218,53 @@ void encode_fruits(const char* output_file, const _osr& r, const u32 flags, std:
 
 	encode_delta_time(r, result);
 
-	bit_stream BS{};
+	_key_data_constructor kd{};
 
-	floatp last{};
-	
-	for (auto f : r) {
+	_mantissa_stream mantissa{};
+	_exponent_stream exponent{};
 
-		floatp c{ f.x };
+	std::vector<u8> exp_data; exp_data.reserve(r.size());
 
-		add_to_u8(BS.data, *(u32*)&c);
 
-		last = c;
+	for (const auto& f : r) {
+
+		// CTB is always clamped between 0-512, no sign data is required
+
+		// For some ungodly reason unknown to man, you can use the smoke key in CTB.
+		// Seems like a oversight so I'm just dropping it.
+		kd.tick(f.keys & 1);
+
+		const floatp c{ f.x };
+
+		exp_data.push_back(c.p.exponent);
+		mantissa.push_back(c.p.mantissa);
 
 	}
 
-	result.add_compress_stream(rrf_tag::fruits_x_data, BS, comp::man_16_prop());
+	{
+		exponent.compress(exp_data);
 
-	result.write(output_file, {});
+		result.add_stream(rrf_tag::fruits_exp_sustain, &exponent.chunk_count, 4);
+
+		result.add_compress_stream(rrf_tag(rrf_tag::game_space_float_x_exponent_sustain),
+			exponent.sustain_data, comp::exp_sustain_prop()
+		);
+
+		result.add_compress_stream(rrf_tag::game_space_float_x_exponent_stream,
+			exponent.stream, comp::exp_stream_prop()
+		);
+
+		const auto& comp{ mantissa.get_comp() };
+
+		result.add_stream(rrf_tag::game_space_float_x_mantissa,
+			comp.data(), comp.size()
+		);
+
+
+
+	}
+
+	result.write(output_file, kd);
 
 }
 
@@ -1207,11 +1273,14 @@ void encode_replay(const char* output_file, _osr& r, const u32 flags, std::vecto
 	if (flags & (RRF_FLAG::gamemode_taiko | RRF_FLAG::gamemode_mania)) {
 
 		if (flags & RRF_FLAG::gamemode_mania) {
-
-			// TODO: Missing scroll speed.
+			
+			if (r.size() > 1) {
+				r[0].x = 0.f; r[0].y = 0.f;
+				r[1].x = 0.f; r[1].y = 0.f;
+			}
 
 			for (auto& f : r)
-				f.keys = int(f.x);
+				f.keys |= u32(f.x) << 2;
 
 		}
 

@@ -14,8 +14,7 @@
 
 #define RRF_VERSION 0
 
-// Bigger than 4 but compresses much better
-#define BUCKET_COMP_KEYS 8,16
+#define BUCKET_COMP_KEYS 8,8,16
 
 #define SCREEN_SPACE_DELTA 4,4,4,8
 #define SCREEN_SPACE_SIGN_SUSTAIN 8
@@ -388,7 +387,7 @@ enum class rrf_tag : u8 {
 	game_space_float_y_mantissa,
 
 	mania_scroll_data,
-	fruits_x_data,
+	fruits_exp_sustain,
 
 	osr_header,
 	life_bar,

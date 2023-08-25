@@ -72,6 +72,7 @@ namespace rrf {
 
 }
 
+template<int stride = 2>
 void extract_exponent_stream(const u32 key_frame_count, floatp* output,
 	const u8* absolute_table,
 	const bit_stream& stream_bit,
@@ -94,13 +95,13 @@ void extract_exponent_stream(const u32 key_frame_count, floatp* output,
 	const auto write_exponent = [&](u8 exp, u32 count) {
 
 		for (size_t i{}; i <= count; ++i)
-			output[2 * (exp_i++)].p.exponent = exp;
+			output[stride * (exp_i++)].p.exponent = exp;
 
 		last_exponent = exp;
 
 	};
 
-	write_exponent(absolute_table[small_read<3>(stream_bit, bit_offset)], 0);
+	write_exponent(absolute_table[read_bucket<3>(stream_bit, bit_offset, 3)], 0);
 
 	bool double_sign{};
 	bool IMPL_SIGN{};
@@ -109,7 +110,7 @@ void extract_exponent_stream(const u32 key_frame_count, floatp* output,
 
 		if (small_read<1>(stream_bit, bit_offset) == 1) {
 
-			const auto index{ small_read<3>(stream_bit, bit_offset) };
+			const auto index{ read_bucket<3>(stream_bit, bit_offset, 3) };
 
 			write_exponent(absolute_table[index], sustain[sustain_i++]);
 			IMPL_SIGN = 0;
@@ -149,10 +150,137 @@ void extract_exponent_stream(const u32 key_frame_count, floatp* output,
 
 		}
 
-
 	}
 
 }
+
+
+template<int stride = 2>
+void extract_high_float(const _stream_map& stream_data, const u32 index,
+	const u32 key_frame_count, const u32 sustain_length,
+	floatp* float_table) {
+
+	float_table += index;
+
+	std::vector<u32> sustain_buffer{}; sustain_buffer.resize(sustain_length);
+
+	// Exponent
+	{
+
+		u8 absolute_table[256];
+
+		{
+
+			bit_stream table_stream{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_absolute_table) + index)] };
+
+			u8* v{ absolute_table };
+
+			size_t i{};
+
+			*(v++) = read_bucket<3>(table_stream, i, 4) ^ 128;
+
+			for (;;) {
+
+
+				auto delta{ (int)read_bucket<3>(table_stream, i, 2) };
+
+				if (delta == 0)
+					break;
+
+				delta = small_read<1>(table_stream, i) ? -delta : delta;
+
+				const auto prev{ *(v - 1) };
+
+				*(v++) = (prev + delta);
+
+
+			}
+
+		}
+
+		extract_exponent_stream< stride>(key_frame_count, float_table,
+			absolute_table,
+			bit_stream{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_stream) + index)] },
+			bit_stream{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_sustain) + index)] },
+			sustain_buffer
+		);
+
+	}
+
+	// Mantissa
+	{
+
+		const auto mantissa_buffer{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_mantissa) + index)] };
+
+		floatp* o{ float_table };
+		const u8* d{ mantissa_buffer.data() };
+
+		bit_stream d_buff{};
+
+		constexpr size_t start[]{ 0, 16, 24 };
+
+		for (size_t mc{}; mc < 2; ++mc) {
+
+			auto size{ *(u32*)d };
+
+			if (size == 0) {
+				d += 4;
+				continue;
+			}
+
+			if (size & ((u32)1 << 31)) {
+				size <<= 1;
+				size >>= 1;
+				rrf::lzma_decomp(d_buff.data, d + 4, size);
+			}
+			else {
+				d_buff.data.resize(size);
+				memcpy(d_buff.data.data(), d + 4, size);
+			}
+
+			u16 last16{};
+			u8 last8{};
+
+			size_t di{};
+			for (size_t i{}; i < key_frame_count; ++i) {
+
+				u32 mantissa{};
+
+				for (size_t z{ start[mc] }; z < start[mc + 1]; ++z)
+					mantissa |= (u32(d_buff[di++]) << z);
+
+				float_table[stride * i].p.mantissa |= mantissa;
+
+
+				if (mc == 1) {
+
+					u16 t16{ u16(mantissa) };
+					u8 t8{ u8(mantissa >> 16) };
+
+					t8 += last8;
+					t16 += last16;
+
+					last8 = t8;
+					last16 = t16;
+
+					float_table[stride * i].p.mantissa = (u32(t8) << 16) | u32(t16);
+
+				}
+
+			}
+
+			d += size + 4;
+			d_buff.clear();
+
+		}
+
+
+	}
+
+
+}
+
+
 
 std::vector<u8> compress_osr_string(std::string_view string) {
 
@@ -269,6 +397,7 @@ void construct_screen_space(const _rrf_header* header, const _stream_map& stream
 
 }
 
+
 void construct_game_space(const _rrf_header* header, const _stream_map& stream_data, std::vector<_osr_frame>& R) {
 
 	_game_space_info gsi{};
@@ -324,117 +453,7 @@ void construct_game_space(const _rrf_header* header, const _stream_map& stream_d
 
 			}
 
-			// Exponent
-			{
-
-				u8 absolute_table[256];
-
-				{
-
-					bit_stream table_stream{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_absolute_table) + fc)] };
-
-					u8* v{ absolute_table };
-
-					size_t i{};
-
-					*(v++) = read_bucket<3>(table_stream, i, 4) ^ 128;
-
-					for (;;) {
-
-
-						auto delta{ (int)read_bucket<3>(table_stream, i, 2) };
-
-						if (delta == 0)
-							break;
-
-						delta = small_read<1>(table_stream, i) ? -delta : delta;
-
-						const auto prev{ *(v - 1) };
-
-						*(v++) = (prev + delta);
-
-
-					}
-
-				}
-				
-				sustain_buffer.resize(gsi.exp_sustain_count[fc]);
-
-				bit_stream sustain_bit{}, stream_bit{};
-
-				sustain_bit.data = stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_sustain) + fc)];
-				stream_bit.data = stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_stream) + fc)];
-
-
-				extract_exponent_stream(key_frame_count, float_table.data() + fc,
-					absolute_table, stream_bit, sustain_bit,
-					sustain_buffer
-				);
-
-			}
-
-			// Mantissa
-			{
-
-				const auto mantissa_buffer{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_mantissa) + fc)] };
-
-				floatp* o{ float_table.data() + fc };
-				const u8* d{ mantissa_buffer.data() };
-
-				bit_stream d_buff{};
-
-				constexpr size_t start[]{ 0, 16, 24 };
-
-				for (size_t mc{}; mc < 2; ++mc) {
-
-					auto size{ *(u32*)d };
-
-					if (size == 0) {
-						d += 4;
-						continue;
-					}
-
-					if (size & ((u32)1 << 31)) {
-						size <<= 1;
-						size >>= 1;
-						rrf::lzma_decomp(d_buff.data, d + 4, size);
-					}
-					else {
-						d_buff.data.resize(size);
-						memcpy(d_buff.data.data(), d + 4, size);
-					}
-
-					u8 last{};
-
-					size_t di{};
-					for (size_t i{}; i < key_frame_count; ++i) {
-
-						u32 mantissa{};
-
-						for (size_t z{ start[mc] }; z < start[mc + 1]; ++z)
-							mantissa |= (u32(d_buff[di++]) << z);
-
-
-						if (mc == 1) {
-
-							u8 t{ u8(mantissa >> 16) };
-
-							t += last;
-							last = t;
-							mantissa = (t & 0b1111111) << 16;
-						}
-
-						float_table[fc + 2 * i].p.mantissa |= mantissa;
-
-					}
-
-					d += size + 4;
-					d_buff.clear();
-
-				}
-
-
-			}
+			extract_high_float(stream_data, fc, key_frame_count, gsi.exp_sustain_count[fc], float_table.data());
 
 		}
 
@@ -515,11 +534,31 @@ void construct_game_space(const _rrf_header* header, const _stream_map& stream_d
 
 }
 
+
+void construct_ctb(const _rrf_header* header, const _stream_map& stream_data, std::vector<_osr_frame>& R) {
+
+	const auto& exp_raw{ stream_data[rrf_tag::fruits_exp_sustain] };
+
+	if (exp_raw.size() != 4)
+		return;
+
+
+	std::vector<floatp> float_table{}; float_table.resize(R.size());
+
+	extract_high_float<1>(stream_data, 0, header->frame_count, *(u32*)exp_raw.data(), float_table.data());
+
+	for (size_t i{}, size{R.size()}; i < size; ++i) {
+
+		R[i].x = float_table[i].f;
+
+	}
+
+
+}
+
 bool rrf_to_osr(const char* input_file, const char* output_file) {
 
-
 	const auto& raw_bytes{ read_file(input_file) };
-
 
 	const _rrf_header*const header{ (const _rrf_header*)raw_bytes.data() };
 
@@ -608,23 +647,54 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 	
 		};
 
-		if(flags & (1 << 0)) read_key(1 | 4);
-		if(flags & (1 << 1)) read_key(2 | 8);
-		if(flags & (1 << 2)) read_key(1);
-		if(flags & (1 << 3)) read_key(2);
-		if(flags & (1 << 4)) read_key(16);
+
+		if (header->flags & (RRF_FLAG::gamemode_mania | RRF_FLAG::gamemode_taiko)) {
+
+			for (size_t i{}; i < 31; ++i) {
+
+				if (flags & (1 << i))
+					read_key(1 << i);
+
+			}
+
+		} else {
+
+			if (flags & (1 << 0)) read_key(1);
+			if (flags & (1 << 1)) read_key(2);
+			if (flags & (1 << 2)) read_key(1 | 4);
+			if (flags & (1 << 3)) read_key(2 | 8);
+			if (flags & (1 << 4)) read_key(16);
+
+		}
 
 	}
-	
-	((header->flags & RRF_FLAG::using_screenspace) ? construct_screen_space : construct_game_space)(header, stream_data, R);
+	if (header->flags & RRF_FLAG::gamemode_mania) {
+
+		const float speed{ *(float*)stream_data[rrf_tag::mania_scroll_data].data() };
+
+		for (auto& r : R) {
+			r.x = float(r.keys >> 2);
+			r.y = speed;
+			r.keys &= 3;
+		}
+
+		R[0].x = 256.f; R[0].y = -500.f;
+
+		R[1].x = 256.f; R[1].y = -500.f;
+
+	}else if (header->flags & RRF_FLAG::gamemode_taiko) {
+	} else if (header->flags & RRF_FLAG::gamemode_fruits) {
+		construct_ctb(header, stream_data, R);
+	}else
+		((header->flags & RRF_FLAG::using_screenspace) ? construct_screen_space : construct_game_space)(header, stream_data, R);
 	
 	{
 
 		size_t i{};
 		std::string OUTPUT; OUTPUT.resize(4096);
 	
-		for (auto r : R) {
-	
+		for (auto& r : R) {
+
 			constexpr auto M_C{ 25 * 4 };
 	
 			if ((OUTPUT.size() - i) < M_C)

@@ -95,9 +95,6 @@ void run_test_set() {
 		printf("%i > %i\n", T_OLD, T_NEW);
 	}
 
-
-	//printf("%f percent %i bytes saved\n", 100.f * ((float)TOTAL_OUTPUT / float(TOTAL_INPUT)), TOTAL_INPUT - TOTAL_OUTPUT);
-
 }
 
 

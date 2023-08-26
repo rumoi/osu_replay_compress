@@ -1225,7 +1225,6 @@ void encode_fruits(const char* output_file, const _osr& r, const u32 flags, std:
 
 	std::vector<u8> exp_data; exp_data.reserve(r.size());
 
-
 	for (const auto& f : r) {
 
 		// CTB is always clamped between 0-512, no sign data is required
@@ -1245,6 +1244,10 @@ void encode_fruits(const char* output_file, const _osr& r, const u32 flags, std:
 		exponent.compress(exp_data);
 
 		result.add_stream(rrf_tag::fruits_exp_sustain, &exponent.chunk_count, 4);
+
+		result.add_stream(rrf_tag::game_space_float_x_exponent_absolute_table,
+			exponent.abs_table_stream
+		);
 
 		result.add_compress_stream(rrf_tag(rrf_tag::game_space_float_x_exponent_sustain),
 			exponent.sustain_data, comp::exp_sustain_prop()

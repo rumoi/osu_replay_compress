@@ -93,6 +93,7 @@ void run_test_set() {
 		
 		write_file(OUTFILE[i].c_str(), o);
 		printf("%i > %i\n", T_OLD, T_NEW);
+
 	}
 
 }

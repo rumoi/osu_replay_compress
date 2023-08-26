@@ -198,7 +198,7 @@ void extract_high_float(const _stream_map& stream_data, const u32 index,
 
 		}
 
-		extract_exponent_stream< stride>(key_frame_count, float_table,
+		extract_exponent_stream<stride>(key_frame_count, float_table,
 			absolute_table,
 			bit_stream{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_stream) + index)] },
 			bit_stream{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_exponent_sustain) + index)] },
@@ -211,8 +211,7 @@ void extract_high_float(const _stream_map& stream_data, const u32 index,
 	{
 
 		const auto mantissa_buffer{ stream_data[rrf_tag(u8(rrf_tag::game_space_float_x_mantissa) + index)] };
-
-		floatp* o{ float_table };
+				
 		const u8* d{ mantissa_buffer.data() };
 
 		bit_stream d_buff{};
@@ -251,8 +250,9 @@ void extract_high_float(const _stream_map& stream_data, const u32 index,
 
 				float_table[stride * i].p.mantissa |= mantissa;
 
-
 				if (mc == 1) {
+
+					mantissa = float_table[stride * i].p.mantissa;
 
 					u16 t16{ u16(mantissa) };
 					u8 t8{ u8(mantissa >> 16) };
@@ -542,17 +542,7 @@ void construct_ctb(const _rrf_header* header, const _stream_map& stream_data, st
 	if (exp_raw.size() != 4)
 		return;
 
-
-	std::vector<floatp> float_table{}; float_table.resize(R.size());
-
-	extract_high_float<1>(stream_data, 0, header->frame_count, *(u32*)exp_raw.data(), float_table.data());
-
-	for (size_t i{}, size{R.size()}; i < size; ++i) {
-
-		R[i].x = float_table[i].f;
-
-	}
-
+	extract_high_float<4>(stream_data, 0, header->frame_count, *(u32*)exp_raw.data(), (floatp*)&R[0].x);
 
 }
 
@@ -687,7 +677,7 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 		construct_ctb(header, stream_data, R);
 	}else
 		((header->flags & RRF_FLAG::using_screenspace) ? construct_screen_space : construct_game_space)(header, stream_data, R);
-	
+
 	{
 
 		size_t i{};

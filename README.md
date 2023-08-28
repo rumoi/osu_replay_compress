@@ -5,14 +5,14 @@
 Replay set: https://drive.google.com/file/d/1i2oe929loEzhvCfRYG-DeZZQ_YouaBYD/view
 
 # osu!game_space
-61.147% avg
+61.138% avg
 
-146869397 -> 89806613
+146869397 -> 89793302
 
 # osu!screen_space
-41.688% avg
+41.693% avg
 
-79733067 -> 33239538
+79733067 -> 33243641
 
 # taiko
 68.697% avg
@@ -25,14 +25,14 @@ Replay set: https://drive.google.com/file/d/1i2oe929loEzhvCfRYG-DeZZQ_YouaBYD/vi
 14573725 -> 9223532
 
 # fruit
-67.710% avg
+67.568% avg
 
-10419674 -> 7055162
+10419674 -> 7040395
 
 # Total
-55.522771329% of the original size
+55.5133468341% of the original size
 
-254.39029 MB -> 141.244539 MB
+254.39029 MB -> 141.220564 MB
 
 Game space (Raw input enabled replays) is lossless for every single frame where any key is being held, for the frames with no key inputs the x/y coordinates are quantised to a lower resolution - an imperceptible change but it can easily be removed.
 

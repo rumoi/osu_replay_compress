@@ -2,6 +2,7 @@
 
 #include "rrf_shared.h"
 #include <algorithm>
+#include <intrin.h> // _BitScanForward 
 
 void add_to_u8(std::vector<u8>& output, u32 input) {
 
@@ -254,8 +255,9 @@ namespace comp {
 		CLzmaEncProps p;
 		LzmaEncProps_Init(&p);
 
-		p.fb = 32;
 		p.level = 5;
+
+		p.fb = 32;
 		p.mc = 32;
 		p.numHashBytes = 3;
 
@@ -274,7 +276,7 @@ namespace comp {
 		
 		p.level = 5;
 
-		p.fb = 32;
+		p.fb = 64;
 		p.mc = 32;
 		p.numHashBytes = 2;
 		
@@ -584,31 +586,26 @@ bit_stream combine_bool_vector(const bit_stream& a, const bit_stream& b) {
 }
 
 struct _mantissa_stream {
-
+	
 	bit_stream stream[2];
 
 	u16 last16;
 	u8 last8;
-
 	void push_back(u32 V) {
 
 		u16 c16{ u16(V) };
 		u8 c8{ u8(V >> 16) };
-
-		u16 d16{ c16 };
-		u8 d8{ c8};
 		
-		d16 -= last16;
-		d8 -= last8;
+		c16 -= last16;
+		c8 -= last8;
 
-		last16 = c16;
-		last8 = c8;
+		last16 = u16(V);
+		last8 = u8(V >> 16);
 
-		for (size_t i{ 0 }; i < 16; ++i)
-			stream[0].push_back((d16 >> i) & 1);
+		stream[0].data.push_back(u8(c16));
+		stream[0].data.push_back(u8(c16 >> 8));
 
-		for (size_t i{ 0 }; i < 8; ++i)
-			stream[1].push_back((d8 >> i) & 1);
+		stream[1].data.push_back(c8);
 
 	}
 
@@ -882,6 +879,8 @@ struct _rrf_construct {
 
 			add_to_u8(key_data.data, active_flags);
 
+			// Release sustains have a higher entropic state than pressing on average.
+
 			for (const auto& ks : kd.key_sustain) {
 
 				if (ks.size() <= 1)
@@ -942,7 +941,7 @@ struct _rrf_construct {
 
 void encode_delta_time(const _osr& r, _rrf_construct& rrf) {
 
-	std::vector<int> delta_table{}; delta_table.reserve(64);
+	std::vector<int> delta_table{};
 
 	{
 		std::vector<std::pair<u32, u32>> temp{}; temp.reserve(64);
@@ -1000,58 +999,73 @@ void encode_delta_time(const _osr& r, _rrf_construct& rrf) {
 
 }
 
-float get_screen_ratio(const _osr& r) {
+float get_screen_ratio_single(const _osr& r, float R) {
 
-	constexpr static float field_height{ 480.f };
-	constexpr static float playfield_height{ 384.f };
+	u32 flag{};
 
-	std::vector<std::pair<u32, u32>> unique_position{};
+	for (size_t i{ 2 }; i < std::max(r.size(), (size_t)1) - 1; ++i) {
 
-	for (size_t i{ 2 }; i < std::max(r.size(), (size_t)1) - 1; ++i)
-		unique_add(std::bit_cast<u32>(r[i].y), unique_position);
+		const float sp{ r[i].y * R };
 
-	float predicted_ratio{ 1.f };
-	int matched_frames{ 0 };
-	
-	for (size_t i{ 600 }; i <= 2400; ++i) {
+		// osu! incorrectly rounds the floats as it serializes, this means every single replay is actually slightly incorrect.
+		// Funnily enough doing this pulls back more information than the default .osr format
+		constexpr static float epsilon{ 0.001f };
 
-		int matched{};
+		const int rounded{ (int)std::round(sp) };
 
-		const float screen_ratio{ float(i) / field_height };
+		if (abs(std::round(sp) - sp) > epsilon)
+			return 0.f;
 
-		const float game_height{ playfield_height * screen_ratio };
+		flag |= std::bit_cast<u32>(rounded);
 
-		const float game_ratio{ game_height / playfield_height };
-
-		for (auto y : unique_position) {
-	
-			float y_pos{ std::bit_cast<float>(y.first) };
-
-			const float sp{ y_pos * game_ratio };
-
-			// osu! incorrectly rounds the floats as it serializes, this means every single replay is actually slightly incorrect.
-			// Funnily enough doing this pulls back more information than the default .osr format
-			constexpr static float epsilon{ 0.001f };
-
-			if (abs(std::round(sp) - sp) > epsilon)
-				break;
-
-			++matched;
-		}
-	
-		if (matched > matched_frames) {
-
-			matched_frames = matched;
-			predicted_ratio = game_ratio;
-
-			if (matched_frames == unique_position.size())
-				break;
-		}
-	
 	}
 
-	return (matched_frames == unique_position.size()) ? predicted_ratio : 0.f;
+	u32 in{};
+	_BitScanForward((unsigned long*)&in, flag);
 
+	if (in != 0 && in < 8)
+		R /= float(1 << in);
+
+	return R;
+}
+
+float get_screen_ratio(const _osr& r) {
+
+	constexpr std::array game_ratio{
+		//2.250000f,
+		//3.000000f,
+		//1.875000f,
+		//1.500000f,
+		//4.375000f,
+		//4.500000f,
+		//2.500000f,
+		//2.000000f,
+		//1.250000f,
+		//5.000000f,
+		//1.800000f,
+		//4.000000f,
+		//3.750000f,
+		//1.302083f
+		1.302083f,
+		1.800000f,
+		3.000000f,
+		3.750000f,
+		4.375000f,
+		4.000000f,
+		4.500000f,
+		5.000000f
+	};
+
+	for (const auto& f : game_ratio) {
+		 
+		const auto ratio{ get_screen_ratio_single(r, f) };
+
+		if (ratio != 0.f) {
+			return ratio;
+		}
+	}
+
+	return 0.f;
 }
 
 bool encode_replay_screen_space(const char* output_file, const _osr& r, const u32 flags, std::vector<u8> osr_header_bytes = std::vector<u8>{}) {
@@ -1146,7 +1160,7 @@ bool encode_replay_screen_space(const char* output_file, const _osr& r, const u3
 		{
 
 			const auto& comp{ combine_bool_vector(SS_sign_sustain[0], SS_sign_sustain[1]) };
-			
+
 			result.add_compress_stream(rrf_tag::screen_space_sign_sustain, comp, comp::screen_space_sign_sustain(comp.size()));
 
 		}
@@ -1221,6 +1235,10 @@ void encode_fruits(const char* output_file, const _osr& r, const u32 flags, std:
 	_key_data_constructor kd{};
 
 	_mantissa_stream mantissa{};
+
+	mantissa.stream[0].data.reserve(r.size() * 2);
+	mantissa.stream[1].data.reserve(r.size());
+
 	_exponent_stream exponent{};
 
 	std::vector<u8> exp_data; exp_data.reserve(r.size());
@@ -1230,17 +1248,19 @@ void encode_fruits(const char* output_file, const _osr& r, const u32 flags, std:
 		// CTB is always clamped between 0-512, no sign data is required
 
 		// For some ungodly reason unknown to man, you can use the smoke key in CTB.
-		// Seems like a oversight so I'm just dropping it.
+		// Seems like an oversight so I'm just dropping it.
 		kd.tick(f.keys & 1);
 
 		const floatp c{ f.x };
 
 		exp_data.push_back(c.p.exponent);
+
 		mantissa.push_back(c.p.mantissa);
 
 	}
 
 	{
+
 		exponent.compress(exp_data);
 
 		result.add_stream(rrf_tag::fruits_exp_sustain, &exponent.chunk_count, 4);
@@ -1262,8 +1282,6 @@ void encode_fruits(const char* output_file, const _osr& r, const u32 flags, std:
 		result.add_stream(rrf_tag::game_space_float_x_mantissa,
 			comp.data(), comp.size()
 		);
-
-
 
 	}
 
@@ -1305,6 +1323,12 @@ void encode_replay(const char* output_file, _osr& r, const u32 flags, std::vecto
 		result.add_stream(rrf_tag::osr_header, osr_header_bytes.data(), osr_header_bytes.size());
 
 	encode_delta_time(r, result);
+
+
+	for (size_t i{}; i < 2; ++i) {
+		result.man[i].stream[0].data.reserve(r.size() * 2);
+		result.man[i].stream[1].data.reserve(r.size());
+	}
 
 	_key_data_constructor kd{};
 
@@ -1419,7 +1443,7 @@ void encode_replay(const char* output_file, _osr& r, const u32 flags, std::vecto
 		result.add_compress_stream(rrf_tag(i + size_t(rrf_tag::game_space_float_x_exponent_sustain)),
 			result.exp[i].sustain_data, comp::exp_sustain_prop()
 		);
-
+		
 		result.add_compress_stream(rrf_tag(i + size_t(rrf_tag::game_space_float_x_exponent_stream)),
 			result.exp[i].stream, comp::exp_stream_prop()
 		);

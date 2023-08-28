@@ -274,9 +274,7 @@ void extract_high_float(const _stream_map& stream_data, const u32 index,
 
 		}
 
-
 	}
-
 
 }
 
@@ -669,7 +667,6 @@ bool rrf_to_osr(const char* input_file, const char* output_file) {
 		}
 
 		R[0].x = 256.f; R[0].y = -500.f;
-
 		R[1].x = 256.f; R[1].y = -500.f;
 
 	}else if (header->flags & RRF_FLAG::gamemode_taiko) {

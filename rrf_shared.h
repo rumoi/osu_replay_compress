@@ -12,6 +12,63 @@
 #ifndef __RRF_SHARED_H
 #define __RRF_SHARED_H
 
+enum RRF_FLAG {
+
+	has_osr_header = 1 << 0,
+	force_lossless = 1 << 1, // Only affects raw input replays
+	keep_life_bar = 1 << 2,
+
+	gamemode_taiko = 1 << 3,
+	gamemode_fruits = 1 << 4,
+	gamemode_mania = 1 << 5,
+
+	using_screenspace = 1 << 6,
+
+};
+
+enum class rrf_tag : unsigned char {
+
+	time_delta_table = 0,
+	time_delta_stream,
+
+	key_bit_stream,
+
+	screen_space_info,
+
+	screen_space_sign_sustain,
+	screen_space_x_delta,
+	screen_space_y_delta,
+
+	game_space_info,
+
+	game_space_lowf_sign,
+	game_space_lowf_delta,
+
+	game_space_float_x_sign,
+	game_space_float_y_sign,
+
+	game_space_float_x_exponent_absolute_table,
+	game_space_float_y_exponent_absolute_table,
+
+	game_space_float_x_exponent_sustain,
+	game_space_float_y_exponent_sustain,
+
+	game_space_float_x_exponent_stream,
+	game_space_float_y_exponent_stream,
+
+	game_space_float_x_mantissa,
+	game_space_float_y_mantissa,
+
+	mania_scroll_data,
+	fruits_exp_sustain,
+
+	osr_header,
+	life_bar,
+
+	custom_format,
+
+};
+
 #define RRF_VERSION 0
 
 #define BUCKET_COMP_KEYS 8,8,16
@@ -337,63 +394,6 @@ u32 read_bucket(const bit_stream& input, size_t& i, const T... bits) {
 
 struct _data_chunk {
 	u32 size : 31, is_compressed : 1;
-};
-
-enum RRF_FLAG {
-
-	has_osr_header = 1 << 0,
-	force_lossless = 1 << 1, // Only affects raw input replays
-	keep_life_bar = 1 << 2,
-
-	gamemode_taiko = 1 << 3,
-	gamemode_fruits = 1 << 4,
-	gamemode_mania = 1 << 5,
-
-	using_screenspace = 1 << 6,
-
-};
-
-enum class rrf_tag : u8 {
-
-	time_delta_table = 0,
-	time_delta_stream,
-
-	key_bit_stream,
-
-	screen_space_info,
-
-	screen_space_sign_sustain,
-	screen_space_x_delta,
-	screen_space_y_delta,
-
-	game_space_info,
-
-	game_space_lowf_sign,
-	game_space_lowf_delta,
-
-	game_space_float_x_sign,
-	game_space_float_y_sign,
-
-	game_space_float_x_exponent_absolute_table,
-	game_space_float_y_exponent_absolute_table,
-
-	game_space_float_x_exponent_sustain,
-	game_space_float_y_exponent_sustain,
-
-	game_space_float_x_exponent_stream,
-	game_space_float_y_exponent_stream,
-
-	game_space_float_x_mantissa,
-	game_space_float_y_mantissa,
-
-	mania_scroll_data,
-	fruits_exp_sustain,
-
-	osr_header,
-	life_bar,
-
-	custom_format,
-
 };
 
 struct _rrf_header {
